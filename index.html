@@ -80,15 +80,10 @@ let ptFilter='all',sessMonth='';
 let payMode='monthly',payMonth='',payRangeFrom='',payRangeTo='',payTrainerFilter='all',expandedTrainer='';
 let unpaidView='all',unpaidMonth='',unpaidDate='',unpaidYear='';
 
-var GAS_URL='https://script.google.com/macros/s/AKfycbxEvCTUeuzv_jJ90kruEUI2iVSw81_AGVEdzoACbKcAmrh6oucrhnaG7BJPbfegClAn/exec';
-var _saving=false;
-
 function LS(k,d){if(d===undefined)d='[]';try{var v=localStorage.getItem(k);return JSON.parse(v!==null?v:d);}catch(e){try{return JSON.parse(d);}catch(e2){return [];}}}
 function SS(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}}
 
-// 구글시트에서 데이터 불러오기
 function loadState(){
-  // 우선 localStorage에서 빠르게 로드 (오프라인 대비)
   S.members=LS('jng_members');S.packages=LS('jng_packages');S.sessions=LS('jng_sessions');
   S.trainers=LS('jng_trainers');S.lockers=LS('jng_lockers','{}');
   S.actLog=LS('jng_actlog');S.deletedLog=LS('jng_deletedlog');
@@ -97,65 +92,15 @@ function loadState(){
   else S.accounts={admin:{id:'admin',pw:'1234',role:'admin',name:'관리자',trainerId:''}};
 }
 
-// 구글시트에서 최신 데이터 가져오기
 function syncFromCloud(callback){
-  showSyncBanner('☁️ 데이터 불러오는 중...');
-  fetch(GAS_URL)
-  .then(function(r){return r.json();})
-  .then(function(res){
-    if(res.ok&&res.data&&res.data.length>2){
-      try{
-        var d=JSON.parse(res.data);
-        if(d.members)S.members=d.members;
-        if(d.packages)S.packages=d.packages;
-        if(d.sessions)S.sessions=d.sessions;
-        if(d.trainers)S.trainers=d.trainers;
-        if(d.lockers)S.lockers=d.lockers;
-        if(d.accounts)S.accounts=d.accounts;
-        if(d.deletedLog)S.deletedLog=d.deletedLog;
-        // localStorage도 최신화
-        SS('jng_members',S.members);SS('jng_packages',S.packages);
-        SS('jng_sessions',S.sessions);SS('jng_trainers',S.trainers);
-        SS('jng_lockers',S.lockers);SS('jng_accounts',S.accounts);
-        SS('jng_deletedlog',S.deletedLog);
-        hideSyncBanner();
-        if(callback)callback(true);
-      }catch(e){hideSyncBanner();if(callback)callback(false);}
-    } else {
-      hideSyncBanner();if(callback)callback(false);
-    }
-  })
-  .catch(function(){hideSyncBanner();if(callback)callback(false);});
+  // 로컬 파일 버전 - 바로 localStorage에서 로드
+  if(callback)callback(false);
 }
 
-// 구글시트에 저장
 function saveState(){
-  // localStorage 즉시 저장 (빠른 반응)
   SS('jng_members',S.members);SS('jng_packages',S.packages);SS('jng_sessions',S.sessions);
   SS('jng_trainers',S.trainers);SS('jng_lockers',S.lockers);SS('jng_accounts',S.accounts);
   SS('jng_actlog',S.actLog);SS('jng_deletedlog',S.deletedLog);
-  // 구글시트에 비동기 저장
-  if(_saving)return;_saving=true;
-  showSyncBanner('💾 저장 중...');
-  var payload=JSON.stringify({
-    members:S.members,packages:S.packages,sessions:S.sessions,
-    trainers:S.trainers,lockers:S.lockers,accounts:S.accounts,
-    deletedLog:S.deletedLog||[]
-  });
-  fetch(GAS_URL,{
-    method:'POST',
-    body:JSON.stringify({data:payload})
-  })
-  .then(function(r){return r.json();})
-  .then(function(res){
-    _saving=false;
-    if(res.ok)showSyncBanner('✅ 저장 완료!',1500);
-    else showSyncBanner('⚠️ 저장 실패',2000);
-  })
-  .catch(function(){
-    _saving=false;
-    showSyncBanner('⚠️ 네트워크 오류 (로컬 저장됨)',2000);
-  });
 }
 
 function showSyncBanner(msg,autoHideMs){
@@ -241,8 +186,16 @@ function tname(id){var t=S.trainers.find(function(x){return x.id==id;});return t
 function exVat(p){return Math.round(p/1.1);}
 function allMonths(){var res=[],d=new Date();for(var i=0;i<48;i++){res.push(d.getFullYear()+'-'+(d.getMonth()+1).toString().padStart(2,'0'));d.setMonth(d.getMonth()-1);}return res;}
 function getMemberBalance(memberId){
-  var added=S.sessions.filter(function(s){return s.memberId==memberId&&s.type==='add';}).reduce(function(s,x){return s+Number(x.qty||1);},0);
-  var used=S.sessions.filter(function(s){return s.memberId==memberId&&s.type==='use';}).reduce(function(s,x){return s+Number(x.qty||1);},0);
+  // 환불된 상품의 packageId 목록
+  var refundedPkgIds=S.packages.filter(function(p){return p.memberId==memberId&&!p.isRefund&&p.refunded;}).map(function(p){return p.id;});
+  // 환불된 상품의 add세션 제외
+  var added=S.sessions.filter(function(s){
+    return s.memberId==memberId&&s.type==='add'&&refundedPkgIds.indexOf(s.packageId)<0;
+  }).reduce(function(s,x){return s+Number(x.qty||1);},0);
+  // 환불된 상품의 use세션 제외
+  var used=S.sessions.filter(function(s){
+    return s.memberId==memberId&&s.type==='use'&&refundedPkgIds.indexOf(s.packageId)<0;
+  }).reduce(function(s,x){return s+Number(x.qty||1);},0);
   return added-used;
 }
 function getMemberDefaultTrainer(memberId){
@@ -269,8 +222,19 @@ function hideIForm(id){var el=document.getElementById(id);if(el)el.classList.add
 function toggleDetailForm(id){var el=document.getElementById(id);if(el)el.classList.toggle('hidden');}
 function hideDetailForm(id){var el=document.getElementById(id);if(el)el.classList.add('hidden');}
 function vatPreview(priceId,vatId){
-  var el=document.getElementById(priceId),price=el?parseInt(el.value)||0:0,vat=Math.round(price/11),vel=document.getElementById(vatId);
+  var el=document.getElementById(priceId),price=parseNum(el?el.value:''),vat=Math.round(price/11),vel=document.getElementById(vatId);
   if(vel)vel.textContent=price>0?'부가세 '+fmt(vat)+'원 / VAT제외 '+fmt(price-vat)+'원':'';
+}
+// 콤마 입력 헬퍼
+function numInput(el){
+  var v=el.value.replace(/[^0-9]/g,'');
+  var num=parseInt(v)||0;
+  el.value=num>0?num.toLocaleString('ko-KR'):'';
+  el.dataset.num=num;
+}
+function parseNum(v){
+  if(typeof v==='string')return parseInt(v.replace(/[^0-9]/g,''))||0;
+  return parseInt(v)||0;
 }
 function msHtml(inputId,hiddenId,ph){
   ph=ph||'회원 검색...';
@@ -300,42 +264,50 @@ function goToMember(mid){
 }
 
 // ── MEMBERS ──
+function isExpired(m){
+  var latestPkg=S.packages.filter(function(p){return p.memberId==m.id&&!p.isRefund;}).sort(function(a,b){return b.startDate.localeCompare(a.startDate);})[0];
+  var endDate=m.endDate||(latestPkg?calcEndDate(latestPkg.startDate,latestPkg.totalSessions):'');
+  if(m.manualExpired)return true;
+  return !!(endDate&&endDate<today());
+}
+function memberRow(m){
+  var bal=getMemberBalance(m.id);
+  var unpaid=getMemberUnpaid(m.id);
+  var latestPkg=S.packages.filter(function(p){return p.memberId==m.id&&!p.isRefund;}).sort(function(a,b){return b.startDate.localeCompare(a.startDate);})[0];
+  var endDate=m.endDate||(latestPkg?calcEndDate(latestPkg.startDate,latestPkg.totalSessions):'');
+  var expired=isExpired(m);
+  var lockerNum=Object.keys(S.lockers).find(function(k){return S.lockers[k]&&S.lockers[k].memberId==m.id;});
+  var lockerPw=lockerNum&&S.lockers[lockerNum]?S.lockers[lockerNum].pw:'';
+  var trainerDisplay=latestPkg?tname(latestPkg.trainerId):(m.defaultTrainerId?tname(m.defaultTrainerId):'-');
+  return '<tr onclick="selectedMember=S.members.find(function(x){return x.id===\''+m.id+'\'});switchTab(\'members\')" style="cursor:pointer'+(expired?';background:#fff8f8':'')+'">'+
+  '<td><strong>'+m.name+'</strong>'+(m.manualExpired?'<span style="background:#fee2e2;color:var(--danger);font-size:10px;font-weight:700;padding:1px 5px;border-radius:3px;margin-left:4px">만료</span>':expired?'<span style="color:var(--danger);font-size:10px;margin-left:4px">⚠️만료</span>':'')+'</td>'+
+  '<td style="color:var(--text2)">'+(m.phone||'-')+'</td>'+
+  '<td>'+trainerDisplay+'</td>'+
+  '<td><strong style="color:'+(bal<=0?'var(--danger)':'var(--accent2)')+'">'+bal+'회</strong></td>'+
+  '<td style="color:var(--text2);font-size:11px">'+(endDate||'-')+'</td>'+
+  '<td>'+(lockerNum?'<span style="background:#fff3cd;color:#856404;font-weight:700;padding:2px 8px;border-radius:4px;font-size:12px">'+lockerNum+'번</span>'+(lockerPw?' <span style="font-size:11px;color:var(--text2)">'+lockerPw+'</span>':''):'-')+'</td>'+
+  '<td>'+(unpaid>0?'<span style="color:var(--danger);font-weight:700">'+fmt(unpaid)+'원</span>':'-')+'</td>'+
+  '</tr>';
+}
 function renderMembers(){
   if(selectedMember){return renderMemberDetail(selectedMember);}
-  var isAdmin=CU.role==='admin';
   var memberSearchQ=window._memberSearchQ||'';
   var memberTrainerFilter=window._memberTrainerFilter||'';
-  var list=S.members.filter(function(m){
-    if(memberSearchQ){
-      var q=memberSearchQ.toLowerCase();
-      if(!m.name.toLowerCase().includes(q)&&!(m.phone&&m.phone.includes(q)))return false;
-    }
-    if(memberTrainerFilter){
-      var latestPkg=S.packages.filter(function(p){return p.memberId==m.id&&!p.isRefund;}).sort(function(a,b){return b.startDate.localeCompare(a.startDate);})[0];
-      if(!latestPkg||latestPkg.trainerId!==memberTrainerFilter)return false;
-    }
+  var showExpired=window._showExpired!==undefined?window._showExpired:false;
+  function filterMember(m){
+    if(memberSearchQ){var q=memberSearchQ.toLowerCase();if(!m.name.toLowerCase().includes(q)&&!(m.phone&&m.phone.includes(q)))return false;}
+    if(memberTrainerFilter){var lp=S.packages.filter(function(p){return p.memberId==m.id&&!p.isRefund;}).sort(function(a,b){return b.startDate.localeCompare(a.startDate);})[0];if((!lp||lp.trainerId!==memberTrainerFilter)&&m.defaultTrainerId!==memberTrainerFilter)return false;}
     return true;
-  }).map(function(m){
-    var bal=getMemberBalance(m.id);
-    var unpaid=getMemberUnpaid(m.id);
-    var latestPkg=S.packages.filter(function(p){return p.memberId==m.id&&!p.isRefund;}).sort(function(a,b){return b.startDate.localeCompare(a.startDate);})[0];
-    var endDate=m.endDate||(latestPkg?calcEndDate(latestPkg.startDate,latestPkg.totalSessions):'');
-    var expired=endDate&&endDate<today();
-    var lockerNum=Object.keys(S.lockers).find(function(k){return S.lockers[k]&&S.lockers[k].memberId==m.id;});
-    var lockerPw=lockerNum&&S.lockers[lockerNum]?S.lockers[lockerNum].pw:'';
-    return '<tr onclick="selectedMember=S.members.find(function(x){return x.id===\''+m.id+'\'});switchTab(\'members\')" style="cursor:pointer">'+
-    '<td><strong>'+m.name+'</strong>'+(expired?'<span style="color:var(--danger);font-size:10px;margin-left:4px">⚠️만료</span>':'')+'</td>'+
-    '<td style="color:var(--text2)">'+(m.phone||'-')+'</td>'+
-    '<td>'+(latestPkg?tname(latestPkg.trainerId):(m.defaultTrainerId?tname(m.defaultTrainerId):'-'))+'</td>'+
-    '<td><strong style="color:'+(bal<=0?'var(--danger)':'var(--accent2)')+'">'+bal+'회</strong></td>'+
-    '<td style="color:var(--text2);font-size:11px">'+(endDate||'-')+'</td>'+
-    '<td>'+(lockerNum?'<span style="background:#fff3cd;color:#856404;font-weight:700;padding:2px 8px;border-radius:4px;font-size:12px">'+lockerNum+'번</span>'+(lockerPw?' <span style="font-size:11px;color:var(--text2)">'+lockerPw+'</span>':''):'-')+'</td>'+
-    '<td>'+(unpaid>0?'<span style="color:var(--danger);font-weight:700">'+fmt(unpaid)+'원</span>':'-')+'</td>'+
-    '</tr>';
-  }).join('');
+  }
+  var activeMembers=S.members.filter(function(m){return !isExpired(m)&&filterMember(m);});
+  var expiredMembers=S.members.filter(function(m){return isExpired(m)&&filterMember(m);});
+  var activeCount=S.members.filter(function(m){return !isExpired(m);}).length;
+  var expiredCount=S.members.filter(function(m){return isExpired(m);}).length;
   var trainerFilterBtns='<button class="filter-tab '+(memberTrainerFilter===''?'active':'')+'" data-tid="" onclick="window._memberTrainerFilter=\'\';memberFilterList()">전체</button>'+
   S.trainers.map(function(t){return '<button class="filter-tab '+(memberTrainerFilter===t.id?'active':'')+'" data-tid="'+t.id+'" onclick="window._memberTrainerFilter=\''+t.id+'\';memberFilterList()">'+t.name+'</button>';}).join('');
-  return '<div class="section-header"><div class="section-title">회원 관리 <span style="font-size:14px;font-weight:500;color:var(--text2);margin-left:6px">총 <strong style="color:var(--accent2)">'+S.members.length+'</strong>명</span></div>'+
+  var activeRows=activeMembers.map(memberRow).join('');
+  var expiredRows=expiredMembers.map(memberRow).join('');
+  return '<div class="section-header"><div class="section-title">회원 관리 <span style="font-size:14px;font-weight:500;color:var(--text2);margin-left:6px">활성 <strong style="color:var(--accent2)">'+activeCount+'</strong>명 · 만료 <strong style="color:var(--danger)">'+expiredCount+'</strong>명</span></div>'+
   '<button class="btn btn-primary" onclick="showIForm(\'m-add-form\')">+ 회원 등록</button></div>'+
   '<div id="m-add-form" class="iform hidden"><div class="iform-title">회원 등록</div>'+
   '<div class="fg3">'+
@@ -348,50 +320,39 @@ function renderMembers(){
   '<div class="field"><label>메모</label><input id="m-memo" placeholder="특이사항"></div>'+
   '</div>'+
   '<div class="form-actions"><button class="btn" onclick="hideIForm(\'m-add-form\')">취소</button><button class="btn btn-primary" onclick="saveMember()">등록</button></div></div>'+
-  // 검색 + 필터
   '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px">'+
-  '<input id="member-search-inp" type="text" placeholder="🔍 이름 또는 연락처 검색..." value="'+memberSearchQ+'" '+
-  'oninput="window._memberSearchQ=this.value;memberFilterList()" '+
-  'style="padding:8px 12px;border:1.5px solid var(--border2);border-radius:8px;font-size:13px;font-family:inherit;min-width:220px">'+
+  '<input id="member-search-inp" type="text" placeholder="🔍 이름 또는 연락처 검색..." value="'+memberSearchQ+'" oninput="window._memberSearchQ=this.value;memberFilterList()" style="padding:8px 12px;border:1.5px solid var(--border2);border-radius:8px;font-size:13px;font-family:inherit;min-width:220px">'+
   '<div class="filter-tabs" id="member-filter-tabs" style="margin-bottom:0">'+trainerFilterBtns+'</div>'+
   '</div>'+
-  '<div class="card" style="overflow-x:auto"><table id="member-table" class="data-table">'+
+  // 활성 회원
+  '<div style="font-size:13px;font-weight:700;color:var(--accent2);margin-bottom:6px">✅ 활성 회원 ('+activeCount+'명)</div>'+
+  '<div class="card" style="overflow-x:auto;margin-bottom:16px"><table id="member-table" class="data-table">'+
   '<thead><tr><th>이름</th><th>연락처</th><th>트레이너</th><th>잔여횟수</th><th>종료일</th><th>락카</th><th>미수금</th></tr></thead>'+
-  '<tbody>'+list+'</tbody></table>'+
-  (S.members.length===0?'<div class="empty">등록된 회원이 없어요</div>':'')+'</div>';
+  '<tbody>'+activeRows+'</tbody></table>'+
+  (activeMembers.length===0?'<div class="empty">활성 회원이 없어요</div>':'')+'</div>'+
+  // 만료 회원
+  '<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">'+
+  '<div style="font-size:13px;font-weight:700;color:var(--danger)">⚠️ 만료 회원 ('+expiredCount+'명)</div>'+
+  '<button class="btn btn-sm" onclick="window._showExpired=!'+(showExpired)+'?true:false;switchTab(\'members\')" style="font-size:11px;color:var(--text2)">'+( showExpired?'▲ 접기':'▼ 펼치기')+'</button>'+
+  '</div>'+
+  (showExpired?'<div class="card" style="overflow-x:auto;background:#fff8f8"><table class="data-table">'+
+  '<thead><tr><th>이름</th><th>연락처</th><th>트레이너</th><th>잔여횟수</th><th>종료일</th><th>락카</th><th>미수금</th></tr></thead>'+
+  '<tbody>'+expiredRows+'</tbody></table>'+
+  (expiredMembers.length===0?'<div class="empty">만료 회원이 없어요</div>':'')+'</div>':
+  (expiredCount>0?'<div style="background:#fff8f8;border:1px solid #fecaca;border-radius:8px;padding:10px 14px;color:var(--danger);font-size:12px;cursor:pointer" onclick="window._showExpired=true;switchTab(\'members\')">👆 클릭하면 만료 회원 목록이 펼쳐져요</div>':''));
 }
 function memberFilterList(){
   var q=(window._memberSearchQ||'').toLowerCase();
   var tFilter=window._memberTrainerFilter||'';
-  var filtered=S.members.filter(function(m){
+  function filterMember(m){
     if(q&&!m.name.toLowerCase().includes(q)&&!(m.phone&&m.phone.includes(q)))return false;
-    if(tFilter){
-      var lp=S.packages.filter(function(p){return p.memberId==m.id&&!p.isRefund;}).sort(function(a,b){return b.startDate.localeCompare(a.startDate);})[0];
-      if(!lp||lp.trainerId!==tFilter)return false;
-    }
+    if(tFilter){var lp=S.packages.filter(function(p){return p.memberId==m.id&&!p.isRefund;}).sort(function(a,b){return b.startDate.localeCompare(a.startDate);})[0];if((!lp||lp.trainerId!==tFilter)&&m.defaultTrainerId!==tFilter)return false;}
     return true;
-  });
+  }
+  var activeMembers=S.members.filter(function(m){return !isExpired(m)&&filterMember(m);});
+  var expiredMembers=S.members.filter(function(m){return isExpired(m)&&filterMember(m);});
   var tbody=document.querySelector('#member-table tbody');
-  if(!tbody)return;
-  tbody.innerHTML=filtered.map(function(m){
-    var bal=getMemberBalance(m.id);
-    var unpaid=getMemberUnpaid(m.id);
-    var latestPkg=S.packages.filter(function(p){return p.memberId==m.id&&!p.isRefund;}).sort(function(a,b){return b.startDate.localeCompare(a.startDate);})[0];
-    var endDate=m.endDate||(latestPkg?calcEndDate(latestPkg.startDate,latestPkg.totalSessions):'');
-    var expired=endDate&&endDate<today();
-    var lockerNum=Object.keys(S.lockers).find(function(k){return S.lockers[k]&&S.lockers[k].memberId==m.id;});
-    var lockerPw=lockerNum&&S.lockers[lockerNum]?S.lockers[lockerNum].pw:'';
-    return '<tr onclick="selectedMember=S.members.find(function(x){return x.id===\''+m.id+'\'});switchTab(\'members\')" style="cursor:pointer">'+
-    '<td><strong>'+m.name+'</strong>'+(expired?'<span style="color:var(--danger);font-size:10px;margin-left:4px">⚠️만료</span>':'')+'</td>'+
-    '<td style="color:var(--text2)">'+(m.phone||'-')+'</td>'+
-    '<td>'+(latestPkg?tname(latestPkg.trainerId):(m.defaultTrainerId?tname(m.defaultTrainerId):'-'))+'</td>'+
-    '<td><strong style="color:'+(bal<=0?'var(--danger)':'var(--accent2)')+'">'+bal+'회</strong></td>'+
-    '<td style="color:var(--text2);font-size:11px">'+(endDate||'-')+'</td>'+
-    '<td>'+(lockerNum?'<span style="background:#fff3cd;color:#856404;font-weight:700;padding:2px 8px;border-radius:4px;font-size:12px">'+lockerNum+'번</span>'+(lockerPw?' <span style="font-size:11px;color:var(--text2)">'+lockerPw+'</span>':''):'-')+'</td>'+
-    '<td>'+(unpaid>0?'<span style="color:var(--danger);font-weight:700">'+fmt(unpaid)+'원</span>':'-')+'</td>'+
-    '</tr>';
-  }).join('');
-  // 필터 탭 active 상태 업데이트
+  if(tbody)tbody.innerHTML=activeMembers.map(memberRow).join('');
   document.querySelectorAll('#member-filter-tabs .filter-tab').forEach(function(btn){
     btn.classList.toggle('active',btn.getAttribute('data-tid')===(tFilter||''));
   });
@@ -413,7 +374,8 @@ function renderMemberDetail(m){
   var defaultTid=getMemberDefaultTrainer(m.id);
   var trainerOpts=S.trainers.map(function(t){return '<option value="'+t.id+'" '+(t.id===defaultTid?'selected':'')+'>'+t.name+'</option>';}).join('');
   var endDate=m.endDate||(latestPkg?calcEndDate(latestPkg.startDate,latestPkg.totalSessions):'');
-  var useSess=S.sessions.filter(function(s){return s.memberId==m.id&&s.type==='use';}).sort(function(a,b){return b.date.localeCompare(a.date);});
+  var refundedPkgIds=S.packages.filter(function(p){return p.memberId==m.id&&!p.isRefund&&p.refunded;}).map(function(p){return p.id;});
+  var useSess=S.sessions.filter(function(s){return s.memberId==m.id&&s.type==='use'&&refundedPkgIds.indexOf(s.packageId)<0;}).sort(function(a,b){return b.date.localeCompare(a.date);});
 
   var pkgRows=pkgHistory.map(function(p){
     var rt=p.regType||'new';
@@ -460,6 +422,9 @@ function renderMemberDetail(m){
   (unpaid>0?'<span style="font-size:12px;color:#ff8888;margin-left:6px">미수 '+fmt(unpaid)+'원</span>':'')+
   '</div>'+
   '<div style="display:flex;gap:6px">'+
+  (m.manualExpired?
+    '<button class="btn btn-sm btn-success" onclick="toggleMemberExpired(\''+m.id+'\')">✅ 활성화</button>':
+    '<button class="btn btn-sm" style="background:#f97316;color:#fff;border-color:#ea580c" onclick="toggleMemberExpired(\''+m.id+'\')">⚠️ 만료처리</button>')+
   '<button class="btn btn-sm" style="background:#8b1a1a;color:#fff;border-color:#8b1a1a" onclick="deleteMemberConfirm(\''+m.id+'\')">🗑️ 삭제</button>'+
   '<button class="btn btn-sm" style="background:#333;color:#ccc;border-color:#555" onclick="selectedMember=null;switchTab(\'members\')">← 목록</button>'+
   '</div></div>'+
@@ -519,13 +484,13 @@ function renderMemberDetail(m){
   '<div class="field" style="margin-bottom:0"><label>트레이너</label><select id="dpkg-trainer-'+m.id+'" style="font-size:12px"><option value="" '+(defaultTid?'':'selected')+'>선택</option>'+trainerOpts+'</select></div>'+
   '<div class="field" style="margin-bottom:0"><label>유형</label><select id="dpkg-type-'+m.id+'" style="font-size:12px"><option value="new">신규(45%)</option><option value="re">재등록(55%)</option><option value="intro">소개(55%)</option></select></div>'+
   '<div class="field" style="margin-bottom:0"><label>횟수</label><input id="dpkg-qty-'+m.id+'" type="number" min="1" placeholder="20" style="font-size:12px" oninput="calcDetailPaid(\''+m.id+'\')"></div>'+
-  '<div class="field" style="margin-bottom:0"><label>단가(VAT포함)</label><input id="dpkg-price-'+m.id+'" type="number" placeholder="55000" style="font-size:12px" oninput="vatPreview(\'dpkg-price-'+m.id+'\',\'dpkg-vat-'+m.id+'\');calcDetailPaid(\''+m.id+'\')"><div id="dpkg-vat-'+m.id+'" class="vat-hint"></div></div>'+
+  '<div class="field" style="margin-bottom:0"><label>단가(VAT포함)</label><input id="dpkg-price-'+m.id+'" type="text" inputmode="numeric" placeholder="55,000" style="font-size:12px" oninput="numInput(this);vatPreview(\'dpkg-price-'+m.id+'\',\'dpkg-vat-'+m.id+'\');calcDetailPaid(\''+m.id+'\')"><div id="dpkg-vat-'+m.id+'" class="vat-hint"></div></div>'+
   '<div class="field" style="margin-bottom:0"><label>결제수단</label><select id="dpkg-paytype-'+m.id+'" style="font-size:12px"><option value="card">카드</option><option value="cash">현금</option><option value="cashreceipt">현금영수증</option></select></div>'+
   '<div class="field" style="margin-bottom:0"><label>등록일</label><input id="dpkg-date-'+m.id+'" type="date" value="'+today()+'" style="font-size:12px"></div>'+
   '<div class="field" style="margin-bottom:0"><label>승인번호</label><input id="dpkg-approvalNo-'+m.id+'" placeholder="승인번호" style="font-size:12px"></div>'+
   '<div class="field" style="margin-bottom:0"><label>카드번호</label><input id="dpkg-cardNo-'+m.id+'" placeholder="카드번호" style="font-size:12px"></div>'+
-  '<div class="field" style="margin-bottom:0"><label>입금액</label><input id="dpkg-paid-'+m.id+'" type="number" placeholder="자동계산" style="font-size:12px" oninput="calcDetailUnpaid(\''+m.id+'\')"></div>'+
-  '<div class="field" style="margin-bottom:0"><label>미수금</label><input id="dpkg-unpaid-'+m.id+'" type="number" placeholder="0" style="font-size:12px"></div>'+
+  '<div class="field" style="margin-bottom:0"><label>입금액</label><input id="dpkg-paid-'+m.id+'" type="text" inputmode="numeric" placeholder="자동계산" style="font-size:12px" oninput="numInput(this);calcDetailUnpaid(\''+m.id+'\')"></div>'+
+  '<div class="field" style="margin-bottom:0"><label>미수금</label><input id="dpkg-unpaid-'+m.id+'" type="text" inputmode="numeric" placeholder="0" style="font-size:12px" oninput="numInput(this)"></div>'+
   '</div>'+
   '<div class="field" style="margin:8px 0 0"><label>메모</label><input id="dpkg-memo-'+m.id+'" style="font-size:12px"></div>'+
   '<div class="form-actions" style="margin-top:8px"><button class="btn btn-sm" onclick="toggleDetailForm(\'detail-pkg-form-'+m.id+'\')">취소</button><button class="btn btn-sm btn-primary" onclick="saveDetailPkg(\''+m.id+'\')">등록</button></div></div>'+
@@ -548,11 +513,11 @@ function renderMemberDetail(m){
   '<div class="field" style="margin-bottom:0"><label>트레이너</label><select id="dedit-trainer-'+m.id+'" style="font-size:12px"><option value="">선택</option>'+trainerOpts+'</select></div>'+
   '<div class="field" style="margin-bottom:0"><label>유형</label><select id="dedit-regtype-'+m.id+'" style="font-size:12px"><option value="new">신규(45%)</option><option value="re">재등록(55%)</option><option value="intro">소개(55%)</option></select></div>'+
   '<div class="field" style="margin-bottom:0"><label>횟수</label><input id="dedit-qty-'+m.id+'" type="number" style="font-size:12px"></div>'+
-  '<div class="field" style="margin-bottom:0"><label>단가</label><input id="dedit-price-'+m.id+'" type="number" style="font-size:12px"></div>'+
+  '<div class="field" style="margin-bottom:0"><label>단가</label><input id="dedit-price-'+m.id+'" type="text" inputmode="numeric" oninput="numInput(this)" style="font-size:12px"></div>'+
   '<div class="field" style="margin-bottom:0"><label>결제수단</label><select id="dedit-paytype-'+m.id+'" style="font-size:12px"><option value="card">카드</option><option value="cash">현금</option><option value="cashreceipt">현금영수증</option></select></div>'+
   '<div class="field" style="margin-bottom:0"><label>등록일</label><input id="dedit-date-'+m.id+'" type="date" style="font-size:12px"></div>'+
-  '<div class="field" style="margin-bottom:0"><label>입금액</label><input id="dedit-paid-'+m.id+'" type="number" style="font-size:12px"></div>'+
-  '<div class="field" style="margin-bottom:0"><label>미수금</label><input id="dedit-unpaid-'+m.id+'" type="number" style="font-size:12px"></div>'+
+  '<div class="field" style="margin-bottom:0"><label>입금액</label><input id="dedit-paid-'+m.id+'" type="text" inputmode="numeric" oninput="numInput(this)" style="font-size:12px"></div>'+
+  '<div class="field" style="margin-bottom:0"><label>미수금</label><input id="dedit-unpaid-'+m.id+'" type="text" inputmode="numeric" oninput="numInput(this)" style="font-size:12px"></div>'+
   '<div class="field" style="margin-bottom:0"><label>승인번호</label><input id="dedit-approvalNo-'+m.id+'" style="font-size:12px"></div>'+
   '<div class="field" style="margin-bottom:0"><label>카드번호</label><input id="dedit-cardNo-'+m.id+'" style="font-size:12px"></div>'+
   '</div><div class="field" style="margin:8px 0 0"><label>메모</label><input id="dedit-memo-'+m.id+'" style="font-size:12px"></div>'+
@@ -597,6 +562,17 @@ function saveMemberMemo(mid){
   m.memo=document.getElementById('medit-memo-'+mid).value;
   saveState();
 }
+function toggleMemberExpired(mid){
+  var m=S.members.find(function(x){return x.id===mid;});if(!m)return;
+  if(m.manualExpired){
+    if(!confirm(m.name+' 회원을 활성 회원으로 되돌릴까요?'))return;
+    m.manualExpired=false;
+  }else{
+    if(!confirm(m.name+' 회원을 만료 처리할까요?\n\n만료 회원 목록으로 이동됩니다.'))return;
+    m.manualExpired=true;
+  }
+  saveState();selectedMember=m;switchTab('members');
+}
 function deleteMemberConfirm(mid){
   var m=S.members.find(function(x){return x.id===mid;});if(!m)return;
   var pkgCount=S.packages.filter(function(p){return p.memberId==mid;}).length;
@@ -613,30 +589,31 @@ function deleteMemberConfirm(mid){
 }
 function calcDetailPaid(mid){
   var qty=parseInt(document.getElementById('dpkg-qty-'+mid)?document.getElementById('dpkg-qty-'+mid).value:0)||0;
-  var price=parseInt(document.getElementById('dpkg-price-'+mid)?document.getElementById('dpkg-price-'+mid).value:0)||0;
+  var price=parseNum(document.getElementById('dpkg-price-'+mid)?document.getElementById('dpkg-price-'+mid).value:'');
   var total=qty*price;
   var paid=document.getElementById('dpkg-paid-'+mid);
-  if(paid&&!paid.dataset.manual)paid.value=total||'';
+  if(paid&&!paid.dataset.manual){paid.value=total>0?total.toLocaleString('ko-KR'):'';paid.dataset.num=total;}
   var unpaid=document.getElementById('dpkg-unpaid-'+mid);
-  if(unpaid)unpaid.value=0;
+  if(unpaid){unpaid.value='0';unpaid.dataset.num=0;}
 }
 function calcDetailUnpaid(mid){
   var qty=parseInt(document.getElementById('dpkg-qty-'+mid)?document.getElementById('dpkg-qty-'+mid).value:0)||0;
-  var price=parseInt(document.getElementById('dpkg-price-'+mid)?document.getElementById('dpkg-price-'+mid).value:0)||0;
+  var price=parseNum(document.getElementById('dpkg-price-'+mid)?document.getElementById('dpkg-price-'+mid).value:'');
   var total=qty*price;
-  var paid=parseInt(document.getElementById('dpkg-paid-'+mid)?document.getElementById('dpkg-paid-'+mid).value:0)||0;
+  var paid=parseNum(document.getElementById('dpkg-paid-'+mid)?document.getElementById('dpkg-paid-'+mid).value:'');
+  var unpaidVal=Math.max(0,total-paid);
   var unpaid=document.getElementById('dpkg-unpaid-'+mid);
-  if(unpaid)unpaid.value=Math.max(0,total-paid);
+  if(unpaid){unpaid.value=unpaidVal>0?unpaidVal.toLocaleString('ko-KR'):'0';unpaid.dataset.num=unpaidVal;}
 }
 function saveDetailPkg(mid){
   var trainerId=document.getElementById('dpkg-trainer-'+mid)?document.getElementById('dpkg-trainer-'+mid).value:'';
   var regType=document.getElementById('dpkg-type-'+mid)?document.getElementById('dpkg-type-'+mid).value:'new';
   var qty=parseInt(document.getElementById('dpkg-qty-'+mid)?document.getElementById('dpkg-qty-'+mid).value:0)||0;
-  var price=parseInt(document.getElementById('dpkg-price-'+mid)?document.getElementById('dpkg-price-'+mid).value:0)||0;
+  var price=parseNum(document.getElementById('dpkg-price-'+mid)?document.getElementById('dpkg-price-'+mid).value:'');
   var payType=document.getElementById('dpkg-paytype-'+mid)?document.getElementById('dpkg-paytype-'+mid).value:'card';
   var date=document.getElementById('dpkg-date-'+mid)?document.getElementById('dpkg-date-'+mid).value:today();
-  var paid=parseInt(document.getElementById('dpkg-paid-'+mid)?document.getElementById('dpkg-paid-'+mid).value:0)||qty*price;
-  var unpaidAmt=parseInt(document.getElementById('dpkg-unpaid-'+mid)?document.getElementById('dpkg-unpaid-'+mid).value:0)||0;
+  var paid=parseNum(document.getElementById('dpkg-paid-'+mid)?document.getElementById('dpkg-paid-'+mid).value:'')||qty*price;
+  var unpaidAmt=parseNum(document.getElementById('dpkg-unpaid-'+mid)?document.getElementById('dpkg-unpaid-'+mid).value:'')||0;
   var approvalNo=document.getElementById('dpkg-approvalNo-'+mid)?document.getElementById('dpkg-approvalNo-'+mid).value:'';
   var cardNo=document.getElementById('dpkg-cardNo-'+mid)?document.getElementById('dpkg-cardNo-'+mid).value:'';
   var memo=document.getElementById('dpkg-memo-'+mid)?document.getElementById('dpkg-memo-'+mid).value:'';
@@ -679,7 +656,6 @@ function getOldestActivePkg(mid){
   }).sort(function(a,b){return a.startDate.localeCompare(b.startDate);})
   .find(function(p){return getPkgBalance(p.id,p.totalSessions)>0;});
 }
-
 function saveDetailUse(mid){
   try{
     var trainerEl=document.getElementById('duse-trainer-'+mid);
@@ -716,11 +692,11 @@ function openDetailPkgEdit(pkgId,mid){
   document.getElementById('dedit-trainer-'+mid).value=p.trainerId||'';
   document.getElementById('dedit-regtype-'+mid).value=p.regType||'new';
   document.getElementById('dedit-qty-'+mid).value=p.totalSessions||'';
-  document.getElementById('dedit-price-'+mid).value=p.pricePerSession||'';
+  document.getElementById('dedit-price-'+mid).value=p.pricePerSession?Number(p.pricePerSession).toLocaleString('ko-KR'):'';
   document.getElementById('dedit-paytype-'+mid).value=p.payType||'card';
   document.getElementById('dedit-date-'+mid).value=p.startDate||'';
-  document.getElementById('dedit-paid-'+mid).value=p.paidAmount||'';
-  document.getElementById('dedit-unpaid-'+mid).value=p.unpaidAmount||'';
+  document.getElementById('dedit-paid-'+mid).value=p.paidAmount?Number(p.paidAmount).toLocaleString('ko-KR'):'';
+  document.getElementById('dedit-unpaid-'+mid).value=p.unpaidAmount?Number(p.unpaidAmount).toLocaleString('ko-KR'):'0';
   document.getElementById('dedit-approvalNo-'+mid).value=p.approvalNo||'';
   document.getElementById('dedit-cardNo-'+mid).value=p.cardNo||'';
   document.getElementById('dedit-memo-'+mid).value=p.memo||'';
@@ -730,19 +706,32 @@ function updateDetailPkg(mid){
   var pkgId=document.getElementById('dedit-pkg-id-'+mid).value;
   var p=S.packages.find(function(x){return x.id===pkgId;});if(!p){alert('내역을 찾을 수 없어요');return;}
   var qty=parseInt(document.getElementById('dedit-qty-'+mid).value)||0;
-  var price=parseInt(document.getElementById('dedit-price-'+mid).value)||0;
+  var price=parseNum(document.getElementById('dedit-price-'+mid).value);
   if(!qty||!price){alert('횟수와 단가를 입력해주세요');return;}
+  var oldQty=p.totalSessions;
   p.trainerId=document.getElementById('dedit-trainer-'+mid).value;
   p.regType=document.getElementById('dedit-regtype-'+mid).value;
   p.totalSessions=qty;p.pricePerSession=price;
   p.payType=document.getElementById('dedit-paytype-'+mid).value;
   p.startDate=document.getElementById('dedit-date-'+mid).value;
-  var paid=parseInt(document.getElementById('dedit-paid-'+mid).value)||qty*price;
+  var paid=parseNum(document.getElementById('dedit-paid-'+mid).value)||qty*price;
   p.paidAmount=paid;if(p.originalPaid===undefined)p.originalPaid=paid;
-  p.unpaidAmount=parseInt(document.getElementById('dedit-unpaid-'+mid).value)||0;
+  p.unpaidAmount=parseNum(document.getElementById('dedit-unpaid-'+mid).value)||0;
   p.approvalNo=document.getElementById('dedit-approvalNo-'+mid).value;
   p.cardNo=document.getElementById('dedit-cardNo-'+mid).value;
   p.memo=document.getElementById('dedit-memo-'+mid).value;
+  // ★ 횟수 변경시 연결된 add 세션도 업데이트
+  if(qty!==oldQty){
+    // packageId로 연결된 add 세션 찾기
+    var addSess=S.sessions.find(function(s){return s.type==='add'&&s.packageId===pkgId;});
+    if(addSess){
+      addSess.qty=qty;
+    } else {
+      // packageId 없는 경우 qty+date로 찾기
+      var addSess2=S.sessions.find(function(s){return s.type==='add'&&s.memberId==mid&&Number(s.qty||1)===oldQty&&s.date===p.startDate;});
+      if(addSess2)addSess2.qty=qty;
+    }
+  }
   saveState();logAct('결제수정:'+mname(mid));selectedMember=S.members.find(function(x){return x.id===mid;});switchTab('members');
 }
 function openDetailRefEdit(pkgId,mid){
@@ -904,7 +893,7 @@ function openRefundModal(pkgId,mid){
       memo:'상품환불: '+p.startDate+' 등록건',unpaidCollections:[]
     });
     saveState();logAct('환불처리:'+mname(mid)+' '+qty+'회 '+fmt(fin)+'원');
-    alert('✅ 환불 완료!\n\n환불 '+qty+'회 · 합계 '+fmt(sub)+'원\n위약금 '+fmt(pen)+'원 · 최종 환불 '+fmt(fin)+'원\n\n해당 상품의 수업 소진이 불가합니다.');
+    alert('✅ 환불 완료!\n\n환불 '+qty+'회 · 합계 '+fmt(sub)+'원\n위약금 '+fmt(pen)+'원 · 최종 환불 '+fmt(fin)+'원');
     selectedMember=S.members.find(function(x){return x.id===mid;});switchTab('members');
   };
 }
@@ -1162,8 +1151,16 @@ function buildSalesSummary(){
   // 수금 매출: 수금일이 이번 기간인 것만 (등록월 관계없이)
   var collRev=collInView.reduce(function(s,x){return s+Number(x.c.amount||0);},0);
   var totalRev=regRev+collRev;
-  var totalVat=allPkgs.reduce(function(s,p){if(p.payType==='cash')return s;return s+Math.round((Number(p.originalPaid!==undefined?p.originalPaid:p.paidAmount)||0)/11);},0);
-  var totalExVat=totalRev-totalVat;
+  var totalVat=allPkgs.reduce(function(s,p){
+    if(p.payType==='cash')return s;
+    var basePrice=p.pricePerSession*p.totalSessions;
+    return s+Math.round(basePrice/11);
+  },0);
+  var totalExVat=allPkgs.reduce(function(s,p){
+    if(p.payType==='cash')return s+p.pricePerSession*p.totalSessions;
+    var basePrice=p.pricePerSession*p.totalSessions;
+    return s+Math.round(basePrice/1.1);
+  },0);
   var totalRefundAmt=allRefunds.reduce(function(s,p){
     return s+Number(p.refundAmount||0);
   },0);
@@ -1198,8 +1195,10 @@ function buildSalesSummary(){
   var filterRev={all:totalRev,card:cardRev,cash:cashRev,cashreceipt:crRev,refund:0};
   var filterColor={all:'var(--accent2)',card:'var(--info)',cash:'var(--green)',cashreceipt:'var(--text)',refund:'var(--danger)'};
   var curRev=filterRev[ptFilter]!==undefined?filterRev[ptFilter]:totalRev;
-  var curVat=ptFilter==='cash'?0:Math.round(curRev/11);
-  var curExVat=curRev-curVat;
+  // 단가 기준 VAT 계산
+  var curPkgs=ptFilter==='all'?allPkgs:allPkgs.filter(function(p){return p.payType===ptFilter;});
+  var curVat=ptFilter==='cash'?0:curPkgs.reduce(function(s,p){return s+Math.round(p.pricePerSession*p.totalSessions/11);},0);
+  var curExVat=ptFilter==='cash'?curRev:curPkgs.reduce(function(s,p){return s+Math.round(p.pricePerSession*p.totalSessions/1.1);},0);
   var curLabel=filterLabel[ptFilter]||'전체';
   var trainerCards=S.trainers.map(function(t){
     var td=tm[t.id]||{rev:0,cnt:0,refund:0,refundCnt:0,unpaidCnt:0,unpaidAmt:0};
@@ -1362,8 +1361,13 @@ function renderPackageList(){
     }
     var rt=p.regType||'new';var pct=REG_PCT[rt]||45;
     var opaid=Number(p.originalPaid!==undefined?p.originalPaid:p.paidAmount)||0;
-    var pExVat=p.payType==='cash'?opaid:Math.round(opaid/1.1);
-    var pVat=p.payType==='cash'?0:opaid-pExVat;
+    // 단가 VAT 계산 (pricePerSession 기준)
+    var priceVat=p.pricePerSession||0;
+    var pExVat=p.payType==='cash'?priceVat:Math.round(priceVat/1.1);
+    var pVat=p.payType==='cash'?0:priceVat-pExVat;
+    // 입금액 VAT (요약카드용)
+    var paidExVat=p.payType==='cash'?opaid:Math.round(opaid/1.1);
+    var paidVat=p.payType==='cash'?0:opaid-paidExVat;
     var remaining=calcRemainingUnpaid(p);
     var hasUnpaid=remaining>0;
     var hasColl=calcUnpaidCollected(p)>0;
@@ -1373,7 +1377,7 @@ function renderPackageList(){
     '<td>'+tname(p.trainerId)+'</td>'+
     '<td><span class="badge '+REG_BADGE[rt]+'">'+REG_LABEL[rt]+' '+pct+'%</span>'+(hasUnpaid?'<div style="font-size:10px;color:var(--danger);font-weight:700">● 미수금</div>':'')+'</td>'+
     '<td>'+p.totalSessions+'회</td>'+
-    '<td>'+fmt(p.pricePerSession)+'원'+(p.payType==='cash'?' <span style="font-size:10px;color:var(--green)">(현금·VAT없음)</span>':'')+'</td>'+
+    '<td>'+fmt(priceVat)+'원'+(p.payType==='cash'?' <span style="font-size:10px;color:var(--green)">(현금·VAT없음)</span>':'')+'</td>'+
     '<td><strong>'+fmt(pExVat)+'원</strong></td>'+
     '<td style="color:var(--text2)">'+(p.payType==='cash'?'-':fmt(pVat)+'원')+'</td>'+
     '<td><span class="badge badge-gray">'+(PAY_LABEL[p.payType]||'-')+'</span>'+(p.approvalNo?'<div style="font-size:10px;color:var(--text3)">'+p.approvalNo+'</div>':'')+'</td>'+
@@ -1532,22 +1536,69 @@ function renderUnpaid(){
 function renderSessions(){
   var isAdmin=CU.role==='admin';var myTid=CU.trainerId||'';
   var months=allMonths();
+  var sessMode=window._sessMode||'monthly';
+  var sessFrom=window._sessFrom||sessMonth;
+  var sessTo=window._sessTo||sessMonth;
+  var sessMemberQ=window._sessMemberQ||'';
+  var sessTrainerFilter=window._sessTrainerFilter||'';
+  if(sessTo<sessFrom)sessTo=sessFrom;
+
   var list=S.sessions.filter(function(s){
     if(!isAdmin&&s.trainerId!==myTid)return false;
-    return s.type==='use'&&s.date.startsWith(sessMonth);
+    if(s.type!=='use')return false;
+    // 날짜 필터
+    if(sessMode==='monthly'){if(!s.date.startsWith(sessMonth))return false;}
+    else{if(s.date.slice(0,7)<sessFrom||s.date.slice(0,7)>sessTo)return false;}
+    // 회원 검색
+    if(sessMemberQ){var mn=mname(s.memberId).toLowerCase();if(!mn.includes(sessMemberQ.toLowerCase()))return false;}
+    // 트레이너 필터
+    if(sessTrainerFilter&&s.trainerId!==sessTrainerFilter)return false;
+    return true;
   }).sort(function(a,b){return b.date.localeCompare(a.date);});
+
+  var totalQty=list.reduce(function(s,x){return s+Number(x.qty||1);},0);
+
+  var trainerBtns='<button class="filter-tab '+(sessTrainerFilter===''?'active':'')+'" onclick="window._sessTrainerFilter=\'\';switchTab(\'sessions\')">전체</button>'+
+  S.trainers.map(function(t){return '<button class="filter-tab '+(sessTrainerFilter===t.id?'active':'')+'" onclick="window._sessTrainerFilter=\''+t.id+'\';switchTab(\'sessions\')">'+t.name+'</button>';}).join('');
+
   var rows=list.map(function(s){
     return '<tr><td>'+s.date.slice(0,7)+'</td><td><strong>'+mname(s.memberId)+'</strong></td>'+
-    '<td>'+tname(s.trainerId)+'</td><td>-'+(s.qty||1)+'회</td>'+
+    '<td>'+tname(s.trainerId)+'</td><td><strong style="color:var(--accent2)">'+( s.qty||1)+'회</strong></td>'+
     '<td style="color:var(--text2)">'+(s.memo||'-')+'</td>'+
     '<td><button class="btn btn-sm" onclick="goToMember(\''+s.memberId+'\')" style="color:var(--info);border-color:#a8c0e8;font-size:11px">회원관리</button></td></tr>';
   }).join('');
-  return '<div class="section-header"><div class="section-title">'+(isAdmin?'수업 기록':'내 수업 기록')+'</div>'+
+
+  return '<div class="section-header">'+
+  '<div class="section-title">'+(isAdmin?'수업 기록':'내 수업 기록')+' <span style="font-size:13px;font-weight:500;color:var(--text2)">총 <strong style="color:var(--accent2)">'+list.length+'건</strong> · <strong style="color:var(--accent2)">'+totalQty+'회</strong></span></div>'+
   '<div style="font-size:12px;color:var(--text2);background:var(--surface2);padding:6px 12px;border-radius:6px">💡 수업 소진 입력은 <strong>회원 관리</strong>에서 해주세요</div></div>'+
-  '<div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">'+
-  '<select onchange="sessMonth=this.value;switchTab(\'sessions\')" style="width:auto">'+
-  months.map(function(m){return '<option value="'+m+'" '+(m===sessMonth?'selected':'')+'>'+m+'</option>';}).join('')+
-  '</select></div>'+
+
+  // 기간 선택
+  '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px">'+
+  '<div class="filter-tabs" style="margin-bottom:0">'+
+  '<button class="filter-tab '+(sessMode==='monthly'?'active':'')+'" onclick="window._sessMode=\'monthly\';switchTab(\'sessions\')">월별</button>'+
+  '<button class="filter-tab '+(sessMode==='range'?'active':'')+'" onclick="window._sessMode=\'range\';switchTab(\'sessions\')">기간별</button>'+
+  '</div>'+
+  (sessMode==='monthly'?
+    '<select onchange="sessMonth=this.value;switchTab(\'sessions\')" style="width:auto">'+
+    months.map(function(m){return '<option value="'+m+'" '+(m===sessMonth?'selected':'')+'>'+m+'</option>';}).join('')+
+    '</select>'
+  :
+    '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">'+
+    '<input type="month" value="'+sessFrom+'" onchange="window._sessFrom=this.value;switchTab(\'sessions\')" style="padding:6px 8px;border:1.5px solid var(--border2);border-radius:6px;font-size:13px">'+
+    '<span style="font-weight:700;color:var(--text2)">~</span>'+
+    '<input type="month" value="'+sessTo+'" onchange="window._sessTo=this.value;switchTab(\'sessions\')" style="padding:6px 8px;border:1.5px solid var(--border2);border-radius:6px;font-size:13px">'+
+    '</div>'
+  )+
+  '</div>'+
+
+  // 검색 + 트레이너 필터
+  '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px">'+
+  '<input type="text" placeholder="🔍 회원명 검색..." value="'+sessMemberQ+'" '+
+  'oninput="window._sessMemberQ=this.value;switchTab(\'sessions\')" '+
+  'style="padding:8px 12px;border:1.5px solid var(--border2);border-radius:8px;font-size:13px;font-family:inherit;min-width:180px">'+
+  (isAdmin?'<div class="filter-tabs" style="margin-bottom:0">'+trainerBtns+'</div>':'')+
+  '</div>'+
+
   '<div class="card" style="overflow-x:auto">'+
   (list.length===0?'<div class="empty">수업 기록 없음</div>':
   '<table class="data-table"><thead><tr><th>월</th><th>회원</th><th>트레이너</th><th>횟수</th><th>메모</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>')+
@@ -1895,9 +1946,31 @@ function renderSettings(){
   '<button class="btn btn-primary" onclick="exportData()">💾 JSON 백업</button>'+
   '<label class="btn" style="cursor:pointer">📂 JSON 불러오기<input type="file" accept=".json" style="display:none" onchange="importData(event)"></label>'+
   '<label class="btn btn-success" style="cursor:pointer">📊 엑셀 불러오기<input type="file" accept=".xlsx,.xls" style="display:none" onchange="importExcel(event)"></label>'+
+  '<button class="btn btn-danger" onclick="resetAllData()">🗑️ 전체 데이터 초기화</button>'+
   '</div>'+
   '<div style="font-size:11px;color:var(--text3);margin-top:10px">회원 '+S.members.length+'명 · 횟수권 '+S.packages.length+'건 · 수업기록 '+S.sessions.length+'건</div>'+
   '</div>'+
+  // 만료 회원 관리
+  (function(){
+    var expiredMembers=S.members.filter(function(m){return isExpired(m);});
+    if(!expiredMembers.length)return '';
+    var rows=expiredMembers.map(function(m){
+      return '<tr>'+
+      '<td><strong>'+m.name+'</strong></td>'+
+      '<td style="color:var(--text2)">'+(m.phone||'-')+'</td>'+
+      '<td>'+(m.manualExpired?'<span class="badge badge-red">수동만료</span>':'<span class="badge badge-amber">자동만료</span>')+'</td>'+
+      '<td>'+
+      '<button class="btn btn-sm btn-success" onclick="bulkActivate(\''+m.id+'\')">✅ 활성화</button>'+
+      '</td></tr>';
+    }).join('');
+    return '<div class="section-header" style="margin-top:8px">'+
+    '<div style="font-weight:700">⚠️ 만료 회원 관리 ('+expiredMembers.length+'명)</div>'+
+    '<button class="btn btn-sm btn-success" onclick="bulkActivateAll()">✅ 전체 활성화</button>'+
+    '</div>'+
+    '<div class="card" style="overflow-x:auto">'+
+    '<table class="data-table"><thead><tr><th>이름</th><th>연락처</th><th>만료유형</th><th>처리</th></tr></thead>'+
+    '<tbody>'+rows+'</tbody></table></div>';
+  })()+
   // 삭제이력
   '<div class="section-header" style="margin-top:8px">'+
   '<div style="font-weight:700">🗑️ 삭제 이력</div>'+
@@ -1984,6 +2057,106 @@ function exportData(){
   var blob=new Blob([data],{type:'application/json'});
   var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='jng_backup_'+today()+'.json';a.click();
 }
+function bulkActivate(mid){
+  var m=S.members.find(function(x){return x.id===mid;});if(!m)return;
+  m.manualExpired=false;
+  // 종료일이 과거면 오늘로 초기화
+  if(m.endDate&&m.endDate<today())m.endDate='';
+  saveState();switchTab('settings');
+}
+function bulkActivateAll(){
+  var expiredMembers=S.members.filter(function(m){return isExpired(m);});
+  if(!expiredMembers.length){alert('만료 회원이 없어요');return;}
+  if(!confirm('만료 회원 '+expiredMembers.length+'명을 전체 활성화할까요?'))return;
+  expiredMembers.forEach(function(m){
+    m.manualExpired=false;
+    if(m.endDate&&m.endDate<today())m.endDate='';
+  });
+  saveState();alert('✅ '+expiredMembers.length+'명 활성화 완료!');switchTab('settings');
+}
+function importSessionExcel(e){
+  var file=e.target.files[0];if(!file)return;
+  var script=document.createElement('script');
+  script.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+  script.onload=function(){
+    var reader=new FileReader();
+    reader.onload=function(ev){
+      try{
+        var wb=XLSX.read(ev.target.result,{type:'binary',cellFormula:false});
+        var sheetName=wb.SheetNames.find(function(n){return n.includes('수업소진')||n.includes('소진')||n.includes('수업');});
+        if(!sheetName)sheetName=wb.SheetNames[0];
+        if(!sheetName){alert('⚠️ 시트를 찾을 수 없어요!');return;}
+        var ws=wb.Sheets[sheetName];
+        // 헤더가 몇 행에 있는지 찾기 (월/회원명 등이 있는 행)
+        var rows=XLSX.utils.sheet_to_json(ws,{defval:'',raw:false,header:1});
+        var headerRow=-1;
+        for(var hi=0;hi<Math.min(rows.length,10);hi++){
+          var rv=rows[hi];
+          for(var ci=0;ci<rv.length;ci++){
+            var cv=String(rv[ci]||'').trim();
+            if(cv==='월'||cv==='회원명'||cv==='소진횟수'){headerRow=hi;break;}
+          }
+          if(headerRow>=0)break;
+        }
+        // 헤더 못찾으면 첫행으로
+        if(headerRow<0)headerRow=0;
+        var dataRows=XLSX.utils.sheet_to_json(ws,{defval:'',raw:false,range:headerRow});
+        var added=0,skipped=0,errors=[];
+        function getMonth(v){
+          if(!v)return '';
+          var s=String(v).trim();
+          if(s.match(/^\d{4}-\d{2}/))return s.slice(0,7);
+          if(s.match(/^\d{4}\/\d{2}/))return s.slice(0,4)+'-'+s.slice(5,7);
+          if(!isNaN(Number(s))&&Number(s)>10000){
+            var d=new Date(Math.round((Number(s)-25569)*86400*1000));
+            return d.getFullYear()+'-'+(d.getMonth()+1).toString().padStart(2,'0');
+          }
+          return s.slice(0,7);
+        }
+        dataRows.forEach(function(r,i){
+          var keys=Object.keys(r);
+          var month=getMonth(r['월']||r[keys[0]]||'');
+          var memberName=String(r['회원명']||r['회원']||r[keys[1]]||'').trim();
+          var trainerName=String(r['트레이너']||r['담당트레이너']||r[keys[2]]||'').trim();
+          var qty=Number(r['소진횟수']||r['횟수']||r[keys[3]]||0);
+          var memo=String(r['메모']||r[keys[4]]||'').trim();
+          if(!month||!memberName||!qty)return;
+          if(memberName==='회원명'||memberName==='회원'||memberName==='★필수')return;
+          if(!month.match(/^\d{4}-\d{2}/))return;
+          var m=S.members.find(function(x){return x.name===memberName;});
+          if(!m){errors.push((i+1)+'행: 회원 "'+memberName+'" 없음');skipped++;return;}
+          var t=S.trainers.find(function(x){return x.name===trainerName||x.name.includes(trainerName)||trainerName.includes(x.name);})||null;
+          S.sessions.push({id:uid(),type:'use',memberId:m.id,trainerId:t?t.id:'',date:month+'-01',qty:qty,memo:memo||'엑셀 수업소진'});
+          added++;
+        });
+        if(!added&&!skipped&&!errors.length){
+          alert('⚠️ 가져올 데이터가 없어요!\n\n확인사항:\n1. 시트 이름: 수업소진\n2. 헤더: 월/회원명/트레이너/소진횟수\n3. 월 형식: 2025-09 또는 2025-09-01');
+          return;
+        }
+        var msg='✅ 수업소진 불러오기 완료!\n\n추가: '+added+'건\n건너뜀: '+skipped+'건';
+        if(errors.length)msg+='\n\n⚠️ 오류 (회원명 불일치):\n'+errors.slice(0,10).join('\n');
+        msg+='\n\n저장할까요?';
+        if(!confirm(msg))return;
+        // 명시적으로 localStorage에도 저장
+        SS('jng_sessions',S.sessions);
+        saveState();
+        alert('✅ 저장 완료!\n'+added+'건 수업소진이 추가됐어요.\n\n회원관리에서 잔여횟수를 확인해보세요!');
+        switchTab('members');
+      }catch(err){alert('파일 오류: '+err.message);}
+    };
+    reader.readAsBinaryString(file);
+  };
+  document.head.appendChild(script);
+  e.target.value='';
+}
+function resetAllData(){
+  if(!confirm('⚠️ 전체 데이터 초기화\n\n회원, 결제, 수업기록이 모두 삭제됩니다!\n트레이너, 계정 정보는 유지돼요.\n\n정말 삭제하시겠어요?'))return;
+  if(!confirm('마지막 확인!\n\n모든 회원/매출 데이터가 삭제됩니다.\n계속하시겠어요?'))return;
+  S.members=[];S.packages=[];S.sessions=[];S.lockers={};S.deletedLog=[];
+  saveState();logAct('전체데이터초기화');
+  alert('✅ 초기화 완료!\n\n트레이너와 계정 정보는 그대로 유지됩니다.');
+  switchTab('settings');
+}
 function importExcel(e){
   var file=e.target.files[0];if(!file)return;
   var script=document.createElement('script');
@@ -1992,71 +2165,112 @@ function importExcel(e){
     var reader=new FileReader();
     reader.onload=function(ev){
       try{
-        var wb=XLSX.read(ev.target.result,{type:'binary'});
-        var result={members:[],packages:[],sessions:[],trainers:[]};
-        // 회원목록 시트
+        var wb=XLSX.read(ev.target.result,{type:'binary',cellFormula:false});
+        var result={members:[],packages:[],sessions:[]};
+        // 날짜 변환
+        function toDateStr(v){
+          if(!v)return '';
+          if(typeof v==='number'){var d=new Date(Math.round((v-25569)*86400*1000));return d.getFullYear()+'-'+(d.getMonth()+1).toString().padStart(2,'0')+'-'+d.getDate().toString().padStart(2,'0');}
+          return String(v).trim().slice(0,10);
+        }
+        // 트레이너 매칭 (부분 이름도 허용)
+        function findTrainer(name){
+          if(!name)return null;
+          var n=String(name).trim();
+          return S.trainers.find(function(t){return t.name===n||t.name.includes(n)||n.includes(t.name);})||null;
+        }
+        // 숫자 변환 (수식이면 0)
+        function toNum(v){
+          if(!v&&v!==0)return 0;
+          if(typeof v==='string'&&v.startsWith('='))return 0;
+          return Number(v)||0;
+        }
+        // 회원목록
         if(wb.SheetNames.indexOf('회원목록')>=0){
           var ws=wb.Sheets['회원목록'];
-          var rows=XLSX.utils.sheet_to_json(ws);
+          var rows=XLSX.utils.sheet_to_json(ws,{defval:''});
           rows.forEach(function(r){
-            if(!r['이름'])return;
-            result.members.push({
-              id:uid(),name:r['이름']||'',phone:r['연락처']||'',
-              regdate:r['등록일']||'',memo:r['메모']||''
-            });
+            var name=String(r['이름']||'').trim();
+            if(!name||name==='이름'||name.includes('필수')||name.includes('★'))return;
+            result.members.push({id:uid(),name:name,phone:String(r['연락처']||'').trim(),regdate:toDateStr(r['등록일']),memo:String(r['메모']||'').trim()});
           });
         }
-        // 매출현황 시트
+        // 매출현황
         if(wb.SheetNames.indexOf('매출현황')>=0){
           var ws2=wb.Sheets['매출현황'];
-          var rows2=XLSX.utils.sheet_to_json(ws2);
+          var rows2=XLSX.utils.sheet_to_json(ws2,{defval:''});
           rows2.forEach(function(r){
-            if(!r['회원']||!r['등록일'])return;
-            var m=result.members.find(function(x){return x.name===r['회원'];});
-            var t=S.trainers.find(function(x){return x.name===r['트레이너'];});
+            var memberName=String(r['회원']||'').trim();
+            var dateStr=toDateStr(r['등록일']);
+            if(!memberName||!dateStr||memberName==='회원'||memberName.includes('★'))return;
+            var m=result.members.find(function(x){return x.name===memberName;})||S.members.find(function(x){return x.name===memberName;})||null;
+            var t=findTrainer(r['트레이너']);
             var payTypeMap={'카드':'card','현금':'cash','현금영수증':'cashreceipt','환불':'refund'};
-            var isRefund=r['환불여부']==='환불';
-            result.packages.push({
-              id:uid(),
-              memberId:m?m.id:'',
-              trainerId:t?t.id:'',
-              regType:r['유형']&&r['유형'].includes('재등록')?'re':r['유형']&&r['유형'].includes('소개')?'intro':'new',
-              totalSessions:Number(r['횟수'])||0,
-              pricePerSession:Number(r['단가'])||0,
-              startDate:String(r['등록일']||'').slice(0,10),
-              payType:payTypeMap[r['결제수단']]||'card',
-              paidAmount:Number(r['입금액'])||0,
-              originalPaid:Number(r['입금액'])||0,
-              unpaidAmount:Number(r['미수금'])||0,
-              isRefund:isRefund,
-              unpaidCollections:[],
-              memo:''
-            });
-            // 횟수권이면 add 세션도 추가
-            if(!isRefund&&Number(r['횟수'])>0){
-              result.sessions.push({
-                id:uid(),type:'add',
-                memberId:m?m.id:'',
-                trainerId:t?t.id:'',
-                date:String(r['등록일']||'').slice(0,10),
-                qty:Number(r['횟수'])||0,
-                memo:'엑셀 가져오기'
-              });
+            var isRefund=String(r['환불여부']||'').includes('환불');
+            var qty=toNum(r['횟수']);
+            var paid=toNum(r['입금액']);
+            var unpaid=toNum(r['미수금']);
+            // 단가: 수식이면 입금액÷횟수로 자동계산
+            var price=toNum(r['단가']);
+            if(!price&&qty>0&&paid>0)price=Math.round(paid/qty);
+            var pkg={id:uid(),memberId:m?m.id:'',trainerId:t?t.id:'',
+              regType:String(r['유형']||'').includes('재등록')?'re':String(r['유형']||'').includes('소개')?'intro':'new',
+              totalSessions:qty,pricePerSession:price,startDate:dateStr,
+              payType:payTypeMap[String(r['결제수단']||'').trim()]||'card',
+              paidAmount:paid,originalPaid:paid,unpaidAmount:unpaid,
+              isRefund:isRefund,unpaidCollections:[],memo:String(r['메모']||'').trim()};
+            result.packages.push(pkg);
+            if(!isRefund&&qty>0){
+              result.sessions.push({id:uid(),type:'add',memberId:m?m.id:'',trainerId:t?t.id:'',packageId:pkg.id,date:dateStr,qty:qty,memo:'엑셀 가져오기'});
             }
           });
         }
-        if(!result.members.length&&!result.packages.length){
-          alert('⚠️ 가져올 데이터가 없어요!\n\n엑셀 파일에 "회원목록" 또는 "매출현황" 시트가 있어야 해요.\n\n먼저 📊 엑셀 백업으로 양식을 받아보세요!');
-          return;
+        // 락카현황 시트 처리
+        var lockerSheetName=wb.SheetNames.find(function(n){return n.includes('락카');});
+        if(lockerSheetName){
+          var wsL=wb.Sheets[lockerSheetName];
+          var rowsL=XLSX.utils.sheet_to_json(wsL,{defval:''});
+          result.lockers={};
+          rowsL.forEach(function(r){
+            var num=Number(r['락카번호']||0);
+            var name=String(r['이름']||'').trim();
+            var pw=String(r['비밀번호']||'').trim();
+            var memberName=String(r['연결회원']||'').trim();
+            if(!num||!name)return;
+            var m=result.members.find(function(x){return x.name===memberName;})||S.members.find(function(x){return x.name===memberName;})||null;
+            result.lockers[num]={name:name,pw:pw,memberId:m?m.id:''};
+          });
         }
-        if(!confirm('엑셀에서 데이터를 가져올까요?\n\n회원: '+result.members.length+'명\n결제: '+result.packages.length+'건\n\n⚠️ 기존 데이터에 추가됩니다.'))return;
-        // 기존 데이터에 추가 (덮어쓰기 아님)
-        result.members.forEach(function(m){S.members.push(m);});
-        result.packages.forEach(function(p){S.packages.push(p);});
-        result.sessions.forEach(function(s){S.sessions.push(s);});
+        // 수업소진 시트 처리
+        var sessSheetName=wb.SheetNames.find(function(n){return n.includes('수업소진')||n.includes('소진');});
+        if(sessSheetName){
+          var ws3=wb.Sheets[sessSheetName];
+          var rows3=XLSX.utils.sheet_to_json(ws3,{defval:'',raw:false});
+          rows3.forEach(function(r){
+            var month=toDateStr(r['월']||Object.values(r)[0]||'').slice(0,7);
+            var memberName=String(r['회원명']||r['회원']||Object.values(r)[1]||'').trim();
+            var trainerName=String(r['트레이너']||Object.values(r)[2]||'').trim();
+            var qty=Number(r['소진횟수']||r['횟수']||Object.values(r)[3]||0);
+            var memo=String(r['메모']||'').trim();
+            if(!month||!memberName||!qty)return;
+            if(memberName==='회원명'||memberName==='★필수')return;
+            if(!month.match(/^\d{4}-\d{2}/))return;
+            var m=result.members.find(function(x){return x.name===memberName;})||S.members.find(function(x){return x.name===memberName;})||null;
+            var t=findTrainer(trainerName);
+            result.sessions.push({id:uid(),type:'use',memberId:m?m.id:'',trainerId:t?t.id:'',date:month+'-01',qty:qty,memo:memo||'엑셀 가져오기'});
+          });
+        }
+        if(!result.members.length&&!result.packages.length){
+          alert('⚠️ 가져올 데이터가 없어요!\n\n시트 이름이 "회원목록", "매출현황" 인지 확인해주세요.');return;
+        }
+        var useSessCnt=result.sessions.filter(function(s){return s.type==="use";}).length;
+        var lockerCnt=Object.keys(result.lockers||{}).length;
+        if(!confirm("엑셀 데이터를 불러올까요?\n\n회원: "+result.members.length+"명\n결제: "+result.packages.length+"건\n수업소진: "+useSessCnt+"건\n락카: "+lockerCnt+"개\n\n⚠️ 기존 데이터가 모두 교체됩니다!"))return;
+        S.members=result.members;S.packages=result.packages;S.sessions=result.sessions;
+        if(lockerCnt>0)S.lockers=result.lockers;
         saveState();
-        alert('✅ 가져오기 완료!\n\n회원 '+result.members.length+'명, 결제 '+result.packages.length+'건 추가됐어요!');
-        switchTab('settings');
+        alert("✅ 가져오기 완료!\n\n회원 "+result.members.length+"명\n결제 "+result.packages.length+"건\n수업소진 "+useSessCnt+"건\n락카 "+lockerCnt+"개 불러왔어요!");
+        switchTab("members");
       }catch(err){alert('파일 오류: '+err.message);}
     };
     reader.readAsBinaryString(file);
@@ -2085,11 +2299,36 @@ function exportExcel(){
   script.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
   script.onload=function(){
     var wb=XLSX.utils.book_new();
-    var memberRows=S.members.map(function(m){return {이름:m.name,연락처:m.phone||'',등록일:m.regdate||'',잔여횟수:getMemberBalance(m.id),미수금:getMemberUnpaid(m.id)};});
+    // 회원목록
+    var memberRows=S.members.map(function(m){
+      return {이름:m.name,연락처:m.phone||'',등록일:m.regdate||'',잔여횟수:getMemberBalance(m.id),미수금:getMemberUnpaid(m.id)};
+    });
     XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(memberRows),'회원목록');
-    var pkgRows=S.packages.map(function(p){return {등록일:p.startDate,회원:mname(p.memberId),트레이너:tname(p.trainerId),유형:REG_LABEL[p.regType||'new'],횟수:p.totalSessions||0,단가:p.pricePerSession,결제수단:PAY_LABEL[p.payType]||p.payType,입금액:p.paidAmount||0,미수금:p.unpaidAmount||0,환불여부:p.isRefund?'환불':'정상'};});
+    // 매출현황 (미수금 수금이력 포함)
+    var pkgRows=S.packages.map(function(p){
+      var collStr=(p.unpaidCollections||[]).map(function(c){return c.date+' '+c.amount+'원 '+(c.payType||'');}).join(' / ');
+      return {
+        등록일:p.startDate,회원:mname(p.memberId),트레이너:tname(p.trainerId),
+        유형:REG_LABEL[p.regType||'new'],횟수:p.totalSessions||0,단가:p.pricePerSession,
+        결제수단:PAY_LABEL[p.payType]||p.payType,입금액:p.paidAmount||0,
+        미수금:p.unpaidAmount||0,수금이력:collStr,환불여부:p.isRefund?'환불':'정상',
+        승인번호:p.approvalNo||'',카드번호:p.cardNo||'',메모:p.memo||''
+      };
+    });
     XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(pkgRows),'매출현황');
-    XLSX.writeFile(wb,'잘나가짐_백업_'+today()+'.xlsx');
+    // 수업소진
+    var sessRows=S.sessions.filter(function(s){return s.type==='use';}).map(function(s){
+      return {월:s.date.slice(0,7),회원명:mname(s.memberId),트레이너:tname(s.trainerId),소진횟수:s.qty||1,메모:s.memo||''};
+    });
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(sessRows),'수업소진');
+    // 락카현황
+    var lockerRows=Object.keys(S.lockers).filter(function(k){return S.lockers[k]&&S.lockers[k].name;}).sort(function(a,b){return Number(a)-Number(b);}).map(function(k){
+      var l=S.lockers[k];
+      return {락카번호:Number(k),이름:l.name||'',비밀번호:l.pw||'',연결회원:l.memberId?mname(l.memberId):''};
+    });
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(lockerRows.length?lockerRows:[{락카번호:'',이름:'',비밀번호:'',연결회원:''}]),'락카현황');
+    XLSX.writeFile(wb,'잘나가GYM_백업_'+today()+'.xlsx');
+    alert('✅ 백업 완료!\n\n회원목록, 매출현황(미수금포함), 수업소진, 락카현황\n4개 시트가 저장됐어요!');
   };
   document.head.appendChild(script);
 }
