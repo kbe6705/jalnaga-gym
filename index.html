@@ -335,7 +335,7 @@ function renderMembers(){
   }).join('');
   var trainerFilterBtns='<button class="filter-tab '+(memberTrainerFilter===''?'active':'')+'" data-tid="" onclick="window._memberTrainerFilter=\'\';memberFilterList()">전체</button>'+
   S.trainers.map(function(t){return '<button class="filter-tab '+(memberTrainerFilter===t.id?'active':'')+'" data-tid="'+t.id+'" onclick="window._memberTrainerFilter=\''+t.id+'\';memberFilterList()">'+t.name+'</button>';}).join('');
-  return '<div class="section-header"><div class="section-title">회원 관리</div>'+
+  return '<div class="section-header"><div class="section-title">회원 관리 <span style="font-size:14px;font-weight:500;color:var(--text2);margin-left:6px">총 <strong style="color:var(--accent2)">'+S.members.length+'</strong>명</span></div>'+
   '<button class="btn btn-primary" onclick="showIForm(\'m-add-form\')">+ 회원 등록</button></div>'+
   '<div id="m-add-form" class="iform hidden"><div class="iform-title">회원 등록</div>'+
   '<div class="fg3">'+
@@ -486,6 +486,13 @@ function renderMemberDetail(m){
   // 수업소진
   '<div style="background:var(--info-light);border:1px solid #a8c0e8;border-radius:8px;padding:14px;margin-bottom:10px">'+
   '<div style="font-size:12px;font-weight:700;color:var(--info);margin-bottom:8px">📝 수업 소진 입력</div>'+
+  (function(){
+    var activePkg=getOldestActivePkg(m.id);
+    if(!activePkg)return '<div style="background:#fff0f0;border:1px solid #f5b4b4;border-radius:6px;padding:8px;margin-bottom:10px;font-size:12px;color:var(--danger)">⚠️ 사용 가능한 횟수권이 없어요. 횟수권을 먼저 등록해주세요.</div>';
+    var rem=getPkgBalance(activePkg.id,activePkg.totalSessions);
+    return '<div style="background:#e3f2fd;border:1px solid #90caf9;border-radius:6px;padding:8px;margin-bottom:10px;font-size:12px">'+
+    '📦 현재 소진 중인 상품: <strong>'+activePkg.startDate+' 등록</strong> ('+activePkg.totalSessions+'회권) · 잔여 <strong style="color:var(--info)">'+rem+'회</strong></div>';
+  })()+
   '<div class="fg3">'+
   '<div class="field" style="margin-bottom:0"><label>트레이너</label><select id="duse-trainer-'+m.id+'" style="font-size:12px"><option value="" '+(defaultTid?'':'selected')+'>선택</option>'+trainerOpts+'</select></div>'+
   '<div class="field" style="margin-bottom:0"><label>월</label><select id="duse-month-'+m.id+'" style="font-size:12px">'+allMonths().map(function(mo){return '<option value="'+mo+'">'+mo+'</option>';}).join('')+'</select></div>'+
@@ -660,6 +667,19 @@ function saveDetailRefund(mid){
   saveState();logAct('환불등록:'+mname(mid)+' '+fmt(amount)+'원');
   selectedMember=S.members.find(function(x){return x.id===mid;});switchTab('members');
 }
+// 특정 상품의 잔여 횟수
+function getPkgBalance(pkgId, totalSessions){
+  var used=S.sessions.filter(function(s){return s.type==='use'&&s.packageId===pkgId;}).reduce(function(s,x){return s+Number(x.qty||1);},0);
+  return Math.max(0, totalSessions-used);
+}
+// 가장 오래된 유효 상품 (등록일 오름차순, 잔여 있는 것)
+function getOldestActivePkg(mid){
+  return S.packages.filter(function(p){
+    return p.memberId==mid&&!p.isRefund&&!p.refunded&&p.totalSessions>0;
+  }).sort(function(a,b){return a.startDate.localeCompare(b.startDate);})
+  .find(function(p){return getPkgBalance(p.id,p.totalSessions)>0;});
+}
+
 function saveDetailUse(mid){
   try{
     var trainerEl=document.getElementById('duse-trainer-'+mid);
@@ -669,14 +689,19 @@ function saveDetailUse(mid){
     var trainerId=trainerEl.value;var month=monthEl.value;var qty=parseInt(qtyEl.value)||0;
     if(!trainerId){alert('트레이너를 선택해주세요');return;}
     if(!qty||qty<1){alert('횟수를 입력해주세요');return;}
-    // 환불되지 않은 상품의 잔여횟수만 계산
-    var validPkgs=S.packages.filter(function(p){return p.memberId==mid&&!p.isRefund&&!p.refunded;});
-    var addedQty=S.sessions.filter(function(s){return s.memberId==mid&&s.type==='add'&&validPkgs.find(function(p){return p.id===s.packageId||!s.packageId;});}).reduce(function(s,x){return s+Number(x.qty||1);},0);
-    var bal=getMemberBalance(mid);
-    if(bal<qty){alert('⚠️ 잔여 횟수 부족!\n\n잔여: '+bal+'회\n소진하려는 횟수: '+qty+'회');return;}
-    S.sessions.push({id:uid(),type:'use',memberId:mid,trainerId:trainerId,date:month+'-01',qty:qty,memo:''});
-    saveState();logAct('수업소진:'+mname(mid)+' '+qty+'회');
+    // 가장 먼저 등록한 유효 상품 찾기
+    var activePkg=getOldestActivePkg(mid);
+    if(!activePkg){alert('⚠️ 사용 가능한 횟수권이 없어요!\n\n모든 상품의 횟수가 소진됐거나 환불됐어요.');return;}
+    var remaining=getPkgBalance(activePkg.id,activePkg.totalSessions);
+    if(remaining<qty){
+      alert('⚠️ 현재 상품 잔여 횟수 부족!\n\n상품: '+activePkg.startDate+' 등록 ('+activePkg.totalSessions+'회)\n잔여: '+remaining+'회\n소진하려는 횟수: '+qty+'회\n\n'+remaining+'회 이하로 입력해주세요.');
+      return;
+    }
+    S.sessions.push({id:uid(),type:'use',memberId:mid,trainerId:trainerId,packageId:activePkg.id,date:month+'-01',qty:qty,memo:''});
+    var newRemaining=remaining-qty;
+    saveState();logAct('수업소진:'+mname(mid)+' '+qty+'회 ('+activePkg.startDate+' 등록분, 잔여'+newRemaining+'회)');
     qtyEl.value='';
+    if(newRemaining===0)alert('✅ 소진 완료!\n\n'+activePkg.startDate+' 등록 상품의 횟수가 모두 소진됐어요.');
     selectedMember=S.members.find(function(x){return x.id===mid;});switchTab('members');
   }catch(e){alert('오류: '+e.message);}
 }
@@ -1807,12 +1832,22 @@ function renderSettings(){
   var accountRows=Object.values(S.accounts).map(function(a){
     return '<div style="display:flex;align-items:center;gap:8px;padding:8px;border:1px solid var(--border);border-radius:6px;margin-bottom:6px">'+
     '<span style="flex:1;font-weight:700">'+a.id+'</span>'+
-    '<span class="badge '+(a.role==='admin'?'badge-red':'badge-blue')+'">'+( a.role==='admin'?'관리자':'직원')+'</span>'+
+    '<span class="badge '+(a.role==='admin'?'badge-red':'badge-blue')+'">'+(a.role==='admin'?'관리자':'직원')+'</span>'+
     '<span style="color:var(--text2);font-size:12px">'+a.name+'</span>'+
+    '<button class="btn btn-sm btn-edit" onclick="openChangePw(\''+a.id+'\')">🔑 비번변경</button>'+
     (a.id!=='admin'?'<button class="btn btn-sm btn-danger" onclick="deleteAccount(\''+a.id+'\')">삭제</button>':'')+
     '</div>';
   }).join('');
-  var deleteLog=(S.deletedLog||[]).slice(0,100).map(function(d){
+  var logMonthFilter=window._logMonthFilter||salesMonth;
+  var months=allMonths();
+  var monthSel='<select onchange="window._logMonthFilter=this.value;switchTab(\'settings\')" style="width:auto;padding:4px 8px;border:1.5px solid var(--border2);border-radius:6px;font-size:12px">'+
+  '<option value="">전체</option>'+
+  months.map(function(m){return '<option value="'+m+'" '+(m===logMonthFilter?'selected':'')+'>'+m+'</option>';}).join('')+'</select>';
+
+  var deleteLog=(S.deletedLog||[]).filter(function(d){
+    if(!logMonthFilter)return true;
+    return d.ts&&d.ts.startsWith(logMonthFilter);
+  }).slice(0,100).map(function(d){
     var dt=new Date(d.ts);
     var dtStr=dt.getFullYear()+'-'+(dt.getMonth()+1).toString().padStart(2,'0')+'-'+dt.getDate().toString().padStart(2,'0')+
     ' '+dt.getHours().toString().padStart(2,'0')+':'+dt.getMinutes().toString().padStart(2,'0');
@@ -1820,9 +1855,13 @@ function renderSettings(){
     return '<tr><td style="white-space:nowrap;font-size:12px">'+dtStr+'</td>'+
     '<td><span class="badge '+typeBadge+'">'+d.type+'</span></td>'+
     '<td style="font-size:12px">'+d.summary+'</td>'+
-    '<td style="font-size:12px;color:var(--text3)">'+( d.by||'-')+'</td></tr>';
+    '<td style="font-size:12px;color:var(--text3)">'+(d.by||'-')+'</td></tr>';
   }).join('');
-  var actLog=S.actLog.slice().reverse().slice(0,50).map(function(a){
+
+  var actLog=S.actLog.slice().reverse().filter(function(a){
+    if(!logMonthFilter)return true;
+    return a.ts&&a.ts.startsWith(logMonthFilter);
+  }).slice(0,100).map(function(a){
     var dt=new Date(a.ts);
     var dtStr=dt.getFullYear()+'-'+(dt.getMonth()+1).toString().padStart(2,'0')+'-'+dt.getDate().toString().padStart(2,'0')+
     ' '+dt.getHours().toString().padStart(2,'0')+':'+dt.getMinutes().toString().padStart(2,'0');
@@ -1855,20 +1894,28 @@ function renderSettings(){
   '<button class="btn btn-primary" onclick="exportExcel()">📊 엑셀 백업</button>'+
   '<button class="btn btn-primary" onclick="exportData()">💾 JSON 백업</button>'+
   '<label class="btn" style="cursor:pointer">📂 JSON 불러오기<input type="file" accept=".json" style="display:none" onchange="importData(event)"></label>'+
+  '<label class="btn btn-success" style="cursor:pointer">📊 엑셀 불러오기<input type="file" accept=".xlsx,.xls" style="display:none" onchange="importExcel(event)"></label>'+
   '</div>'+
   '<div style="font-size:11px;color:var(--text3);margin-top:10px">회원 '+S.members.length+'명 · 횟수권 '+S.packages.length+'건 · 수업기록 '+S.sessions.length+'건</div>'+
   '</div>'+
   // 삭제이력
-  '<div class="section-header" style="margin-top:8px"><div style="font-weight:700">🗑️ 삭제 이력</div>'+
-  '<button class="btn btn-sm" style="color:var(--danger);border-color:#e8b4b4" onclick="if(confirm(\'삭제 이력을 모두 지울까요?\')){S.deletedLog=[];saveState();switchTab(\'settings\')}">전체 지우기</button></div>'+
+  '<div class="section-header" style="margin-top:8px">'+
+  '<div style="font-weight:700">🗑️ 삭제 이력</div>'+
+  '<div style="display:flex;gap:8px;align-items:center">'+monthSel+
+  '<button class="btn btn-sm" style="color:var(--danger);border-color:#e8b4b4" onclick="if(confirm(\'삭제 이력을 모두 지울까요?\')){S.deletedLog=[];saveState();switchTab(\'settings\')}">전체 지우기</button>'+
+  '</div></div>'+
   '<div class="card" style="overflow-x:auto">'+
   (deleteLog?'<table class="data-table"><thead><tr><th>삭제일시</th><th>유형</th><th>내용</th><th>삭제자</th></tr></thead><tbody>'+deleteLog+'</tbody></table>':
   '<div class="empty">삭제 이력 없음</div>')+
   '</div>'+
   // 활동로그
-  '<div class="section-header" style="margin-top:8px"><div style="font-weight:700">활동 로그</div></div>'+
+  '<div class="section-header" style="margin-top:8px">'+
+  '<div style="font-weight:700">활동 로그</div>'+monthSel+
+  '</div>'+
   '<div class="card" style="overflow-x:auto">'+
-  '<table class="data-table"><thead><tr><th>시간</th><th>사용자</th><th>내용</th></tr></thead><tbody>'+actLog+'</tbody></table></div>';
+  (actLog?'<table class="data-table"><thead><tr><th>시간</th><th>사용자</th><th>내용</th></tr></thead><tbody>'+actLog+'</tbody></table>':
+  '<div class="empty">활동 이력 없음</div>')+
+  '</div>';
 }
 function addTrainer(){
   var name=document.getElementById('t-name').value.trim();if(!name){alert('이름을 입력해주세요');return;}
@@ -1881,6 +1928,43 @@ function deleteTrainer(tid){
   if(!confirm(t.name+' 트레이너를 삭제할까요?'))return;
   S.trainers=S.trainers.filter(function(x){return x.id!==tid;});
   saveState();switchTab('settings');
+}
+function openChangePw(accId){
+  var a=S.accounts[accId];if(!a)return;
+  var overlay=document.createElement('div');
+  overlay.style.cssText='position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center';
+  overlay.innerHTML='<div style="background:#fff;border-radius:12px;padding:24px;width:360px;max-width:95vw;box-shadow:0 8px 40px rgba(0,0,0,.25);font-family:inherit">'+
+  '<div style="font-size:16px;font-weight:700;margin-bottom:4px">🔑 비밀번호 변경</div>'+
+  '<div style="font-size:12px;color:#666;margin-bottom:20px">'+a.name+' ('+a.id+')</div>'+
+  (CU.role!=='admin'||CU.id===accId?
+  '<div style="margin-bottom:12px"><label style="font-size:11px;font-weight:700;color:#6b5f45;display:block;margin-bottom:4px">현재 비밀번호</label>'+
+  '<input id="cpw-old" type="password" placeholder="현재 비밀번호" style="width:100%;padding:8px 10px;border:1.5px solid #e0d0b8;border-radius:6px;font-size:14px;font-family:inherit"></div>':'') +
+  '<div style="margin-bottom:12px"><label style="font-size:11px;font-weight:700;color:#6b5f45;display:block;margin-bottom:4px">새 비밀번호</label>'+
+  '<input id="cpw-new" type="password" placeholder="새 비밀번호" style="width:100%;padding:8px 10px;border:1.5px solid #e0d0b8;border-radius:6px;font-size:14px;font-family:inherit"></div>'+
+  '<div style="margin-bottom:20px"><label style="font-size:11px;font-weight:700;color:#6b5f45;display:block;margin-bottom:4px">새 비밀번호 확인</label>'+
+  '<input id="cpw-confirm" type="password" placeholder="새 비밀번호 확인" style="width:100%;padding:8px 10px;border:1.5px solid #e0d0b8;border-radius:6px;font-size:14px;font-family:inherit"></div>'+
+  '<div style="display:flex;gap:8px;justify-content:flex-end">'+
+  '<button onclick="this.closest(\'div[data-ol]\').remove()" style="padding:8px 16px;border:1px solid #e0d0b8;border-radius:6px;background:#fff;cursor:pointer;font-family:inherit;font-size:13px">취소</button>'+
+  '<button id="cpw-ok" style="padding:8px 20px;border:none;border-radius:6px;background:linear-gradient(135deg,#f5a800,#e07800);color:#fff;font-weight:700;cursor:pointer;font-family:inherit;font-size:13px">변경</button>'+
+  '</div></div>';
+  overlay.setAttribute('data-ol','1');
+  document.body.appendChild(overlay);
+  overlay.onclick=function(e){if(e.target===overlay)overlay.remove();};
+  document.getElementById('cpw-ok').onclick=function(){
+    var oldEl=document.getElementById('cpw-old');
+    var newPw=document.getElementById('cpw-new').value;
+    var confirm2=document.getElementById('cpw-confirm').value;
+    // 관리자가 타인 변경 시 현재 비밀번호 확인 생략
+    if(oldEl&&oldEl.value!==a.pw){alert('현재 비밀번호가 틀렸어요');return;}
+    if(!newPw){alert('새 비밀번호를 입력해주세요');return;}
+    if(newPw!==confirm2){alert('새 비밀번호가 일치하지 않아요');return;}
+    if(newPw.length<2){alert('비밀번호는 2자 이상이어야 해요');return;}
+    a.pw=newPw;
+    saveState();
+    overlay.remove();
+    alert('✅ 비밀번호가 변경됐어요!\n\n'+a.name+' 계정의 비밀번호가 변경됐습니다.');
+    logAct('비밀번호변경:'+accId);
+  };
 }
 function addAccount(){
   var id=document.getElementById('acc-id').value.trim();var pw=document.getElementById('acc-pw').value;
@@ -1899,6 +1983,86 @@ function exportData(){
   var data=JSON.stringify({members:S.members,packages:S.packages,sessions:S.sessions,trainers:S.trainers,lockers:S.lockers,accounts:S.accounts,deletedLog:S.deletedLog||[]});
   var blob=new Blob([data],{type:'application/json'});
   var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='jng_backup_'+today()+'.json';a.click();
+}
+function importExcel(e){
+  var file=e.target.files[0];if(!file)return;
+  var script=document.createElement('script');
+  script.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+  script.onload=function(){
+    var reader=new FileReader();
+    reader.onload=function(ev){
+      try{
+        var wb=XLSX.read(ev.target.result,{type:'binary'});
+        var result={members:[],packages:[],sessions:[],trainers:[]};
+        // 회원목록 시트
+        if(wb.SheetNames.indexOf('회원목록')>=0){
+          var ws=wb.Sheets['회원목록'];
+          var rows=XLSX.utils.sheet_to_json(ws);
+          rows.forEach(function(r){
+            if(!r['이름'])return;
+            result.members.push({
+              id:uid(),name:r['이름']||'',phone:r['연락처']||'',
+              regdate:r['등록일']||'',memo:r['메모']||''
+            });
+          });
+        }
+        // 매출현황 시트
+        if(wb.SheetNames.indexOf('매출현황')>=0){
+          var ws2=wb.Sheets['매출현황'];
+          var rows2=XLSX.utils.sheet_to_json(ws2);
+          rows2.forEach(function(r){
+            if(!r['회원']||!r['등록일'])return;
+            var m=result.members.find(function(x){return x.name===r['회원'];});
+            var t=S.trainers.find(function(x){return x.name===r['트레이너'];});
+            var payTypeMap={'카드':'card','현금':'cash','현금영수증':'cashreceipt','환불':'refund'};
+            var isRefund=r['환불여부']==='환불';
+            result.packages.push({
+              id:uid(),
+              memberId:m?m.id:'',
+              trainerId:t?t.id:'',
+              regType:r['유형']&&r['유형'].includes('재등록')?'re':r['유형']&&r['유형'].includes('소개')?'intro':'new',
+              totalSessions:Number(r['횟수'])||0,
+              pricePerSession:Number(r['단가'])||0,
+              startDate:String(r['등록일']||'').slice(0,10),
+              payType:payTypeMap[r['결제수단']]||'card',
+              paidAmount:Number(r['입금액'])||0,
+              originalPaid:Number(r['입금액'])||0,
+              unpaidAmount:Number(r['미수금'])||0,
+              isRefund:isRefund,
+              unpaidCollections:[],
+              memo:''
+            });
+            // 횟수권이면 add 세션도 추가
+            if(!isRefund&&Number(r['횟수'])>0){
+              result.sessions.push({
+                id:uid(),type:'add',
+                memberId:m?m.id:'',
+                trainerId:t?t.id:'',
+                date:String(r['등록일']||'').slice(0,10),
+                qty:Number(r['횟수'])||0,
+                memo:'엑셀 가져오기'
+              });
+            }
+          });
+        }
+        if(!result.members.length&&!result.packages.length){
+          alert('⚠️ 가져올 데이터가 없어요!\n\n엑셀 파일에 "회원목록" 또는 "매출현황" 시트가 있어야 해요.\n\n먼저 📊 엑셀 백업으로 양식을 받아보세요!');
+          return;
+        }
+        if(!confirm('엑셀에서 데이터를 가져올까요?\n\n회원: '+result.members.length+'명\n결제: '+result.packages.length+'건\n\n⚠️ 기존 데이터에 추가됩니다.'))return;
+        // 기존 데이터에 추가 (덮어쓰기 아님)
+        result.members.forEach(function(m){S.members.push(m);});
+        result.packages.forEach(function(p){S.packages.push(p);});
+        result.sessions.forEach(function(s){S.sessions.push(s);});
+        saveState();
+        alert('✅ 가져오기 완료!\n\n회원 '+result.members.length+'명, 결제 '+result.packages.length+'건 추가됐어요!');
+        switchTab('settings');
+      }catch(err){alert('파일 오류: '+err.message);}
+    };
+    reader.readAsBinaryString(file);
+  };
+  document.head.appendChild(script);
+  e.target.value='';
 }
 function importData(e){
   var file=e.target.files[0];if(!file)return;
