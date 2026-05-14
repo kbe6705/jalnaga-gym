@@ -80,7 +80,7 @@ let ptFilter='all',sessMonth='';
 let payMode='monthly',payMonth='',payRangeFrom='',payRangeTo='',payTrainerFilter='all',expandedTrainer='';
 let unpaidView='all',unpaidMonth='',unpaidDate='',unpaidYear='';
 
-var GAS_URL='https://script.google.com/macros/s/AKfycbxEvCTUeuzv_jJ90kruEUI2iVSw81_AGVEdzoACbKcAmrh6oucrhnaG7BJPbfegClAn/exec';
+var GAS_URL='https://script.google.com/macros/s/AKfycbzibGXgQXR_AqojSPS0GjiToWCq7-Zx5BNbWqk_8b8gNKX5IW1dIN4GBrv4R2HVlGim/exec';
 var _saving=false;
 
 function LS(k,d){if(d===undefined)d='[]';try{var v=localStorage.getItem(k);return JSON.parse(v!==null?v:d);}catch(e){try{return JSON.parse(d);}catch(e2){return [];}}}
@@ -90,6 +90,7 @@ function loadState(){
   S.members=LS('jng_members');S.packages=LS('jng_packages');S.sessions=LS('jng_sessions');
   S.trainers=LS('jng_trainers');S.lockers=LS('jng_lockers','{}');
   S.actLog=LS('jng_actlog');S.deletedLog=LS('jng_deletedlog');
+  S.bonuses=LS('jng_bonuses','{}');
   var acc=LS('jng_accounts','null');
   if(acc&&typeof acc==='object'&&!Array.isArray(acc)&&Object.keys(acc).length>0)S.accounts=acc;
   else S.accounts={admin:{id:'admin',pw:'1234',role:'admin',name:'관리자',trainerId:''}};
@@ -129,7 +130,7 @@ function syncFromCloud(callback){
 function saveState(){
   SS('jng_members',S.members);SS('jng_packages',S.packages);SS('jng_sessions',S.sessions);
   SS('jng_trainers',S.trainers);SS('jng_lockers',S.lockers);SS('jng_accounts',S.accounts);
-  SS('jng_actlog',S.actLog);SS('jng_deletedlog',S.deletedLog);
+  SS('jng_actlog',S.actLog);SS('jng_deletedlog',S.deletedLog);SS('jng_bonuses',S.bonuses||{});
   if(_saving)return;_saving=true;
   showSyncBanner('💾 저장 중...');
   var payload=JSON.stringify({
@@ -233,6 +234,8 @@ function tname(id){var t=S.trainers.find(function(x){return x.id==id;});return t
 function exVat(p){return Math.round(p/1.1);}
 function allMonths(){var res=[],d=new Date();for(var i=0;i<48;i++){res.push(d.getFullYear()+'-'+(d.getMonth()+1).toString().padStart(2,'0'));d.setMonth(d.getMonth()-1);}return res;}
 function getMemberBalance(memberId){
+  // 미할당 세션 먼저 자동 할당
+  assignSessionsToPkgs(memberId);
   // 환불된 상품의 packageId 목록
   var refundedPkgIds=S.packages.filter(function(p){return p.memberId==memberId&&!p.isRefund&&p.refunded;}).map(function(p){return p.id;});
   // 환불된 상품의 add세션 제외
@@ -435,17 +438,21 @@ function renderMemberDetail(m){
       return '<div style="font-size:10px;color:var(--info);padding:2px 4px;background:#e3f2fd;border-radius:3px;margin-top:2px">'+
       '💰 '+c.date+' '+fmt(c.amount)+'원 '+cpt+(cp2.length?' ('+cp2.join(' · ')+')':'')+'</div>';
     }).join('');
-    // 이 상품이 환불됐는지 체크
     var isRefunded=p.isRefund||p.refunded;
+    var origPaid=Number(p.originalPaid!==undefined?p.originalPaid:p.paidAmount)||0;
+    var collected=calcUnpaidCollected(p);
+    var remaining=calcRemainingUnpaid(p);
     return '<tr'+(isRefunded?' style="background:#fff5f5"':'')+'><td style="white-space:nowrap">'+p.startDate+'</td>'+
     '<td>'+(p.isRefund?'<span class="badge badge-red">환불</span>':isRefunded?'<span class="badge badge-red">환불완료</span>':'<span class="badge '+REG_BADGE[rt]+'">'+REG_LABEL[rt]+'</span>')+'</td>'+
     '<td>'+tname(p.trainerId)+'</td>'+
     '<td>'+(p.isRefund?'-'+(p.refundSessions||0)+'회':p.totalSessions+'회')+'</td>'+
     '<td>'+fmt(p.pricePerSession)+'원</td>'+
-    '<td><strong>'+fmt(p.paidAmount||p.totalSessions*p.pricePerSession)+'원</strong>'+
-    (calcUnpaidCollected(p)>0?'<div style="font-size:10px;color:var(--text3)">최초 '+fmt(p.originalPaid||0)+'원 +수금 '+fmt(calcUnpaidCollected(p))+'원 <span style="color:var(--accent2)">(미수금)</span></div>':'')+
+    '<td>'+
+    // 입금칸: 최초입금액만 표시
+    '<strong>'+fmt(origPaid)+'원</strong>'+
+    (collected>0?'<div style="font-size:10px;color:var(--info)">+수금 '+fmt(collected)+'원</div>':'')+
     '</td>'+
-    '<td>'+(calcRemainingUnpaid(p)>0?'<span style="color:var(--danger);font-weight:700">잔여 '+fmt(calcRemainingUnpaid(p))+'원</span>':(p.unpaidCollections&&p.unpaidCollections.length?'<span style="color:var(--green);font-size:11px;font-weight:700">✓완납</span>':'-'))+'</td>'+
+    '<td>'+(remaining>0?'<span style="color:var(--danger);font-weight:700">'+fmt(remaining)+'원</span>':(collected>0?'<span style="color:var(--green);font-size:11px;font-weight:700">✓완납</span>':'-'))+'</td>'+
     '<td><span class="badge badge-gray">'+(ptl[p.payType]||'-')+'</span>'+cardInfo+collHtml+'</td>'+
     '<td style="white-space:nowrap">'+
     (!p.isRefund&&!isRefunded?'<button class="btn btn-sm btn-edit" onclick="openDetailPkgEdit(\''+p.id+'\',\''+m.id+'\')">수정</button> ':'')+
@@ -547,7 +554,7 @@ function renderMemberDetail(m){
   '<div class="fg2">'+
   '<div class="field" style="margin-bottom:0"><label>트레이너</label><select id="dref-trainer-'+m.id+'" style="font-size:12px"><option value="" '+(defaultTid?'':'selected')+'>선택</option>'+trainerOpts+'</select></div>'+
   '<div class="field" style="margin-bottom:0"><label>환불 횟수</label><input id="dref-sessions-'+m.id+'" type="number" min="1" style="font-size:12px"></div>'+
-  '<div class="field" style="margin-bottom:0"><label>단가</label><input id="dref-price-'+m.id+'" type="number" style="font-size:12px"></div>'+
+  '<div class="field" style="margin-bottom:0"><label>단가</label><input id="dref-price-'+m.id+'" type="text" inputmode="numeric" placeholder="55,000" oninput="numInput(this)" style="font-size:12px"></div>'+
   '<div class="field" style="margin-bottom:0"><label>환불 금액</label><input id="dref-amount-'+m.id+'" type="number" style="font-size:12px" oninput="calcDetailRefPenalty(\''+m.id+'\')"></div>'+
   '<div class="field" style="margin-bottom:0"><label>위약금</label><input id="dref-penalty-'+m.id+'" type="number" placeholder="자동10%" style="font-size:12px"></div>'+
   '<div class="field" style="margin-bottom:0"><label>환불일자</label><input id="dref-date-'+m.id+'" type="date" value="'+today()+'" style="font-size:12px"></div>'+
@@ -681,7 +688,7 @@ function calcDetailRefPenalty(mid){
 function saveDetailRefund(mid){
   var trainerId=document.getElementById('dref-trainer-'+mid)?document.getElementById('dref-trainer-'+mid).value:'';
   var sessions=parseInt(document.getElementById('dref-sessions-'+mid)?document.getElementById('dref-sessions-'+mid).value:0)||0;
-  var price=parseInt(document.getElementById('dref-price-'+mid)?document.getElementById('dref-price-'+mid).value:0)||0;
+  var price=parseNum(document.getElementById('dref-price-'+mid)?document.getElementById('dref-price-'+mid).value:'');
   var amount=parseInt(document.getElementById('dref-amount-'+mid)?document.getElementById('dref-amount-'+mid).value:0)||0;
   var penEl=document.getElementById('dref-penalty-'+mid);
   var penalty=penEl&&penEl.value?parseInt(penEl.value)||Math.round(amount*0.1):Math.round(amount*0.1);
@@ -693,11 +700,49 @@ function saveDetailRefund(mid){
 }
 // 특정 상품의 잔여 횟수
 function getPkgBalance(pkgId, totalSessions){
-  var used=S.sessions.filter(function(s){return s.type==='use'&&s.packageId===pkgId;}).reduce(function(s,x){return s+Number(x.qty||1);},0);
-  return Math.max(0, totalSessions-used);
+  // packageId 있는 use 세션으로 차감
+  var usedWithPkg=S.sessions.filter(function(s){return s.type==='use'&&s.packageId===pkgId;}).reduce(function(s,x){return s+Number(x.qty||1);},0);
+  return Math.max(0, totalSessions-usedWithPkg);
 }
+
+// packageId 없는 세션을 오래된 상품부터 순서대로 할당
+function assignSessionsToPkgs(memberId){
+  var pkgs=S.packages.filter(function(p){return p.memberId==memberId&&!p.isRefund&&!p.refunded&&p.totalSessions>0;})
+    .sort(function(a,b){return a.startDate.localeCompare(b.startDate);});
+  var unassigned=S.sessions.filter(function(s){return s.memberId==memberId&&s.type==='use'&&!s.packageId;})
+    .sort(function(a,b){return a.date.localeCompare(b.date);});
+  if(!unassigned.length)return;
+  // 각 상품의 남은 용량 계산 (이미 할당된 것 기준)
+  var pkgRemain={};
+  pkgs.forEach(function(p){
+    var used=S.sessions.filter(function(s){return s.type==='use'&&s.packageId===p.id;}).reduce(function(s,x){return s+Number(x.qty||1);},0);
+    pkgRemain[p.id]=Math.max(0,p.totalSessions-used);
+  });
+  // 미할당 세션을 오래된 상품부터 채움
+  unassigned.forEach(function(sess){
+    var qty=Number(sess.qty||1);
+    for(var i=0;i<pkgs.length;i++){
+      var p=pkgs[i];
+      if(pkgRemain[p.id]>0){
+        if(pkgRemain[p.id]>=qty){
+          sess.packageId=p.id;
+          pkgRemain[p.id]-=qty;
+          break;
+        } else {
+          // 이 상품으로 부분 할당 (남은 용량이 있으면)
+          sess.packageId=p.id;
+          pkgRemain[p.id]=0;
+          break;
+        }
+      }
+    }
+  });
+}
+
 // 가장 오래된 유효 상품 (등록일 오름차순, 잔여 있는 것)
 function getOldestActivePkg(mid){
+  // 먼저 미할당 세션 자동 할당
+  assignSessionsToPkgs(mid);
   return S.packages.filter(function(p){
     return p.memberId==mid&&!p.isRefund&&!p.refunded&&p.totalSessions>0;
   }).sort(function(a,b){return a.startDate.localeCompare(b.startDate);})
@@ -884,7 +929,7 @@ function openRefundModal(pkgId,mid){
   '<div><label style="font-size:11px;font-weight:700;color:#6b5f45;display:block;margin-bottom:4px">환불 횟수</label>'+
   '<input id="rm-qty" type="number" min="1" max="'+remainQty+'" value="'+remainQty+'" oninput="rmCalc()" style="width:100%;padding:8px;border:1.5px solid #e0d0b8;border-radius:6px;font-size:14px;font-family:inherit"></div>'+
   '<div><label style="font-size:11px;font-weight:700;color:#6b5f45;display:block;margin-bottom:4px">단가(VAT포함)</label>'+
-  '<input id="rm-price" type="number" value="'+unitPrice+'" oninput="rmCalc()" style="width:100%;padding:8px;border:1.5px solid #e0d0b8;border-radius:6px;font-size:14px;font-family:inherit"></div>'+
+  '<input id="rm-price" type="text" inputmode="numeric" value="'+unitPrice.toLocaleString('ko-KR')+'" oninput="numInput(this);rmCalc()" style="width:100%;padding:8px;border:1.5px solid #e0d0b8;border-radius:6px;font-size:14px;font-family:inherit"></div>'+
   '</div>'+
   '<div style="background:#fff8e6;border:1.5px solid #f5d080;border-radius:8px;padding:12px;margin-bottom:14px">'+
   '<div style="display:flex;justify-content:space-between;margin-bottom:5px;font-size:13px"><span>환불 합계</span><strong id="rm-sub">'+fmt(remainQty*unitPrice)+'원</strong></div>'+
@@ -893,7 +938,7 @@ function openRefundModal(pkgId,mid){
   '<div style="display:flex;align-items:center;gap:6px">'+
   '<input id="rm-pen-input" type="number" value="'+Math.round(remainQty*unitPrice*0.1)+'" oninput="rmCalc()" style="width:120px;padding:4px 8px;border:1.5px solid #e0d0b8;border-radius:6px;font-size:13px;font-family:inherit;text-align:right">'+
   '<span style="font-size:12px;color:#666">원</span>'+
-  '<button onclick="var q=parseInt(document.getElementById(\'rm-qty\').value)||0;var pr=parseInt(document.getElementById(\'rm-price\').value)||0;var el=document.getElementById(\'rm-pen-input\');if(el)el.value=Math.round(q*pr*0.1);rmCalc();" style="font-size:10px;padding:2px 6px;border:1px solid #e0d0b8;border-radius:4px;background:#fff;cursor:pointer;font-family:inherit">10%</button>'+
+  '<button onclick="var q=parseInt(document.getElementById(\'rm-qty\').value)||0;var pr=parseNum(document.getElementById(\'rm-price\').value);var el=document.getElementById(\'rm-pen-input\');if(el)el.value=Math.round(q*pr*0.1).toLocaleString(\'ko-KR\');rmCalc();" style="font-size:10px;padding:2px 6px;border:1px solid #e0d0b8;border-radius:4px;background:#fff;cursor:pointer;font-family:inherit">10%</button>'+
   '</div></div>'+
   '<div style="height:1px;background:#e0d0b8;margin:5px 0"></div>'+
   '<div style="display:flex;justify-content:space-between;font-size:15px;font-weight:700"><span>최종 환불액</span><strong id="rm-fin" style="color:var(--green)">'+fmt(Math.round(remainQty*unitPrice*0.9))+'원</strong></div>'+
@@ -908,7 +953,7 @@ function openRefundModal(pkgId,mid){
   document.body.appendChild(overlay);
   window.rmCalc=function(){
     var q=parseInt(document.getElementById('rm-qty').value)||0;
-    var pr=parseInt(document.getElementById('rm-price').value)||0;
+    var pr=parseNum(document.getElementById('rm-price').value);
     var sub=q*pr;
     var pen=parseInt(document.getElementById('rm-pen-input').value)||0;
     var fin=sub-pen;
@@ -919,7 +964,7 @@ function openRefundModal(pkgId,mid){
   overlay.onclick=function(e){if(e.target===overlay)document.body.removeChild(overlay);};
   document.getElementById('rm-ok').onclick=function(){
     var qty=parseInt(document.getElementById('rm-qty').value)||0;
-    var price=parseInt(document.getElementById('rm-price').value)||0;
+    var price=parseNum(document.getElementById('rm-price').value);
     var pen=parseInt(document.getElementById('rm-pen-input').value)||0;
     var refDate=document.getElementById('rm-date').value;
     if(!qty||qty<1){alert('환불 횟수를 입력해주세요');return;}
@@ -1502,11 +1547,14 @@ function collectUnpaid(pkgId){
     var rec={date:dateStr,amount:amount,payType:payType};
     if(cardco)rec.cardco=cardco;if(cardno)rec.cardno=cardno;if(approvalNo)rec.approvalNo=approvalNo;if(crno)rec.crno=crno;
     p.unpaidCollections.push(rec);
-    p.paidAmount=(p.originalPaid||0)+calcUnpaidCollected(p);
-    p.unpaidAmount=Math.max(0,(Number(p.unpaidAmount)||0)-amount);
+    // paidAmount = 최초입금 + 수금합계 (총금액 초과 불가)
+    var totalPrice=p.totalSessions*p.pricePerSession;
+    var newPaid=Math.min((p.originalPaid||0)+calcUnpaidCollected(p), totalPrice);
+    p.paidAmount=newPaid;
+    p.unpaidAmount=Math.max(0,totalPrice-newPaid);
     saveState();logAct('미수수금:'+mname(p.memberId)+' '+fmt(amount)+'원 ('+dateStr+')');
     var newRemaining=calcRemainingUnpaid(p);
-    alert('✅ 수금처리 완료!\n\n수금액: '+fmt(amount)+'원\n날짜: '+dateStr+'\n총 입금액: '+fmt(p.paidAmount)+'원\n잔여 미수금: '+fmt(newRemaining)+'원'+(newRemaining===0?' 🎉 완납!':''));
+    alert('✅ 수금처리 완료!\n\n수금액: '+fmt(amount)+'원\n날짜: '+dateStr+'\n총 입금액: '+fmt(newPaid)+'원\n잔여 미수금: '+fmt(newRemaining)+'원'+(newRemaining===0?' 🎉 완납!':''));
     switchTab(CT==='unpaid'?'unpaid':'packages');
   };
 }
@@ -1695,10 +1743,22 @@ function buildPayrollBody(){
 }
 function calcTrainerPay(trainerId,monthList){
   var result={sessions:[],totalPay:0,totalQty:0,monthlyData:{}};
+  // 모든 회원의 미할당 세션 먼저 정리
+  S.members.forEach(function(m){assignSessionsToPkgs(m.id);});
   monthList.forEach(function(month){
     var sess=S.sessions.filter(function(s){return s.type==='use'&&s.date.startsWith(month)&&s.trainerId===trainerId;});
     sess.forEach(function(s){
-      var pkg=S.packages.filter(function(p){return p.memberId==s.memberId&&!p.isRefund;}).sort(function(a,b){return b.startDate.localeCompare(a.startDate);})[0];
+      // ★ packageId로 정확한 상품 찾기
+      var pkg=null;
+      if(s.packageId){
+        pkg=S.packages.find(function(p){return p.id===s.packageId&&!p.isRefund;});
+      }
+      // packageId 없거나 못찾으면 해당 월 기준 가장 가까운 상품
+      if(!pkg){
+        pkg=S.packages.filter(function(p){
+          return p.memberId==s.memberId&&!p.isRefund&&!p.refunded&&p.startDate<=s.date;
+        }).sort(function(a,b){return b.startDate.localeCompare(a.startDate);})[0];
+      }
       var priceVat=pkg?pkg.pricePerSession:0;
       var pExVat=pkg?getExVatPrice(priceVat,pkg.payType):0;
       var rt=(pkg&&pkg.regType)||'new';
@@ -1729,21 +1789,39 @@ function buildPayrollMonthly(trainersToShow,isAdmin){
   '</div>':'';
   return metrics+cards;
 }
+function getBonusKey(tid,month){return 'bonus_'+tid+'_'+month;}
+function getBonus(tid,month){return Number((S.bonuses&&S.bonuses[getBonusKey(tid,month)])||0);}
+function setBonus(tid,month,amount){if(!S.bonuses)S.bonuses={};S.bonuses[getBonusKey(tid,month)]=amount;saveState();}
+
 function buildTrainerCard(t,td,labelText,month){
-  var cnt=td.totalQty;var incentive=td.totalPay;var base=t.base||0;var total=base+incentive;var isExp=expandedTrainer===t.id;
+  var cnt=td.totalQty;var incentive=td.totalPay;var base=t.base||0;
+  var bonus=getBonus(t.id,month);
+  var total=base+incentive+bonus;var isExp=expandedTrainer===t.id;
+  var bonusKey='bonus_'+t.id+'_'+month;
   var detailRows=td.sessions.map(function(s){
     return '<tr><td>'+s.date.slice(0,7)+'</td><td>'+mname(s.memberId)+'</td><td><strong>'+s.qty+'회</strong></td>'+
     '<td><span class="badge '+REG_BADGE[s.rt]+'">'+REG_LABEL[s.rt]+'</span></td>'+
     '<td style="color:var(--text2)">'+fmt(s.priceVat)+'원</td><td>'+fmt(s.pExVat)+'원</td><td>'+s.pct+'%</td>'+
     '<td><strong>'+fmt(s.pay)+'원</strong></td></tr>';
   }).join('');
+  var bonusHtml=isExp?
+  '<div style="margin-top:10px;padding:10px;background:#fffbf0;border:1.5px solid #f5d080;border-radius:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">'+
+  '<span style="font-size:12px;font-weight:700;color:var(--accent2)">🎁 지원금/상여금</span>'+
+  '<input id="'+bonusKey+'" type="text" inputmode="numeric" value="'+(bonus>0?bonus.toLocaleString('ko-KR'):'')+'" placeholder="0" '+
+  'oninput="numInput(this)" '+
+  'style="width:140px;padding:6px 10px;border:1.5px solid #f5d080;border-radius:6px;font-size:13px;font-family:inherit">'+
+  '<span style="font-size:12px;color:var(--text2)">원</span>'+
+  '<button onclick="event.stopPropagation();var v=parseNum(document.getElementById(\''+bonusKey+'\').value);setBonus(\''+t.id+'\',\''+month+'\',v);refreshPayroll();" '+
+  'style="padding:6px 14px;border:none;border-radius:6px;background:var(--accent);color:#fff;font-weight:700;cursor:pointer;font-size:12px;font-family:inherit">저장</button>'+
+  '<span style="font-size:11px;color:var(--text3)">(설날·생일 등 임시 지원금)</span>'+
+  '</div>':'';
   var detailHtml=isExp&&detailRows?
   '<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);overflow-x:auto">'+
   '<div style="font-size:11px;font-weight:700;color:var(--text2);margin-bottom:8px">수업 상세 내역</div>'+
   '<table class="data-table"><thead><tr><th>월</th><th>회원</th><th>횟수</th><th>유형</th><th>단가(VAT포함)</th><th>단가(VAT제외)</th><th>비율</th><th>수령액</th></tr></thead>'+
   '<tbody>'+detailRows+
   '<tr style="background:var(--surface2)"><td colspan="2"><strong>합계</strong></td><td><strong>'+cnt+'회</strong></td><td colspan="4"></td><td><strong style="color:var(--accent)">'+fmt(total)+'원</strong></td></tr>'+
-  '</tbody></table></div>':(isExp?'<div style="padding:12px 0;font-size:12px;color:var(--text3)">이 기간 수업 기록이 없어요</div>':'');
+  '</tbody></table></div>'+bonusHtml:(isExp?'<div style="padding:12px 0;font-size:12px;color:var(--text3)">이 기간 수업 기록이 없어요</div>'+bonusHtml:'');
   return '<div class="card" style="margin-bottom:10px;border:'+(isExp?'2px solid var(--accent)':'1px solid var(--border)')+'">'+
   '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;cursor:pointer" data-tid="'+t.id+'" onclick="toggleExpand(this)">'+
   '<div style="display:flex;align-items:center;gap:10px">'+
@@ -1754,7 +1832,7 @@ function buildTrainerCard(t,td,labelText,month){
   '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'+
   '<div style="text-align:right">'+
   '<div style="font-size:20px;font-weight:700;color:var(--accent)">'+fmt(total)+'원</div>'+
-  '<div style="font-size:11px;color:var(--text2)">기본 '+fmt(base)+' + 인센티브 '+fmt(incentive)+'</div>'+
+  '<div style="font-size:11px;color:var(--text2)">기본 '+fmt(base)+' + 인센티브 '+fmt(incentive)+(bonus>0?' + 지원금 '+fmt(bonus):'')+'</div>'+
   '</div>'+
   '<div style="display:flex;flex-direction:column;gap:4px">'+
   '<button class="btn btn-sm btn-primary" onclick="event.stopPropagation();printStatement(\''+t.id+'\',\''+month+'\')">🖨️</button>'+
@@ -1824,22 +1902,16 @@ function refreshPayroll(){var mc=document.getElementById('main-content');if(mc)m
 // ── STATEMENT ──
 function buildStatementHTML(trainerId,month){
   var t=S.trainers.find(function(x){return x.id===trainerId;});if(!t)return '';
-  var sessions=S.sessions.filter(function(s){return s.type==='use'&&s.date.startsWith(month)&&s.trainerId===trainerId;});
-  var totalQty=sessions.reduce(function(s,x){return s+Number(x.qty||1);},0);
-  var incentive=sessions.reduce(function(s,x){
-    var pkg=S.packages.filter(function(p){return p.memberId==x.memberId&&!p.isRefund;}).sort(function(a,b){return b.startDate.localeCompare(a.startDate);})[0];
-    var pExVat=pkg?getExVatPrice(pkg.pricePerSession,pkg.payType):0;
-    var pct=REG_PCT[(pkg&&pkg.regType)||'new']||45;
-    return s+Math.round(pExVat*pct/100)*Number(x.qty||1);
-  },0);
+  // calcTrainerPay와 동일한 로직 사용 (일관성 보장)
+  var td=calcTrainerPay(trainerId,[month]);
+  var totalQty=td.totalQty;
+  var incentive=td.totalPay;
   var base=t.base||0;var totalService=base+incentive;
   var incomeTax=Math.round(totalService*0.03);var localTax=Math.round(totalService*0.003);var finalPay=totalService-incomeTax-localTax;
   var ym=month.split('-');var ml=ym[0]+'년 '+parseInt(ym[1])+'월';
-  var detailRows=sessions.map(function(s){
-    var pkg=S.packages.filter(function(p){return p.memberId==s.memberId&&!p.isRefund;}).sort(function(a,b){return b.startDate.localeCompare(a.startDate);})[0];
-    var pExVat=pkg?getExVatPrice(pkg.pricePerSession,pkg.payType):0;
-    var rt=(pkg&&pkg.regType)||'new';var pct=REG_PCT[rt]||45;var qty=Number(s.qty||1);var pay=Math.round(pExVat*pct/100)*qty;
-    return '<tr><td>'+s.date.slice(0,7)+'</td><td>'+mname(s.memberId)+'</td><td>'+qty+'회</td><td>'+REG_LABEL[rt]+'</td><td>'+fmt(pExVat)+'원</td><td>'+pct+'%</td><td>'+fmt(pay)+'원</td></tr>';
+  var detailRows=td.sessions.map(function(s){
+    return '<tr><td>'+s.date.slice(0,7)+'</td><td>'+mname(s.memberId)+'</td><td>'+s.qty+'회</td>'+
+    '<td>'+REG_LABEL[s.rt]+'</td><td>'+fmt(s.pExVat)+'원</td><td>'+s.pct+'%</td><td>'+fmt(s.pay)+'원</td></tr>';
   }).join('');
   return '<div class="stmt-page">'+
   '<div class="stmt-title">'+ml+' 용역비 정산서</div>'+
@@ -1848,7 +1920,7 @@ function buildStatementHTML(trainerId,month){
   '<tr><td class="stmt-label">수업 정산금</td><td class="stmt-currency">₩</td><td class="stmt-amount">'+fmt(incentive)+'</td></tr>'+
   '<tr><td class="stmt-label">고정 정산금</td><td class="stmt-currency">₩</td><td class="stmt-amount">'+(base>0?fmt(base):'-')+'</td></tr>'+
   '<tr><td class="stmt-label">성과 정산금</td><td class="stmt-currency">₩</td><td class="stmt-amount">-</td></tr>'+
-  '<tr><td class="stmt-label">계약 지원금</td><td class="stmt-currency">₩</td><td class="stmt-amount">-</td></tr>'+
+  '<tr><td class="stmt-label">계약 지원금</td><td class="stmt-currency">₩</td><td class="stmt-amount">'+(bonus>0?fmt(bonus):'-')+'</td></tr>'+
   '<tr class="stmt-subtotal"><td class="stmt-label"><strong>용역대가 합계</strong></td><td class="stmt-currency">₩</td><td class="stmt-amount"><strong>'+fmt(totalService)+'</strong></td></tr>'+
   '<tr><td class="stmt-label">소득세 (3%)</td><td class="stmt-currency">₩</td><td class="stmt-amount">'+fmt(incomeTax)+'</td></tr>'+
   '<tr><td class="stmt-label">지방소득세 (0.3%)</td><td class="stmt-currency">₩</td><td class="stmt-amount">'+fmt(localTax)+'</td></tr>'+
@@ -1891,26 +1963,19 @@ function openPrintWindow(htmls,month){
 }
 function copyStatementText(trainerId,month){
   var t=S.trainers.find(function(x){return x.id===trainerId;});if(!t){alert('트레이너 정보 없음');return;}
-  var sessions=S.sessions.filter(function(s){return s.type==='use'&&s.date.startsWith(month)&&s.trainerId===trainerId;});
-  var totalQty=sessions.reduce(function(s,x){return s+Number(x.qty||1);},0);
-  var incentive=sessions.reduce(function(s,x){
-    var pkg=S.packages.filter(function(p){return p.memberId==x.memberId&&!p.isRefund;}).sort(function(a,b){return b.startDate.localeCompare(a.startDate);})[0];
-    var pExVat=pkg?getExVatPrice(pkg.pricePerSession,pkg.payType):0;
-    var pct=REG_PCT[(pkg&&pkg.regType)||'new']||45;
-    return s+Math.round(pExVat*pct/100)*Number(x.qty||1);
-  },0);
+  // calcTrainerPay와 동일한 로직 사용
+  var td=calcTrainerPay(trainerId,[month]);
+  var totalQty=td.totalQty;
+  var incentive=td.totalPay;
   var base=t.base||0;var totalService=base+incentive;
   var incomeTax=Math.round(totalService*0.03);var localTax=Math.round(totalService*0.003);var finalPay=totalService-incomeTax-localTax;
   var ym=month.split('-');var ml=ym[0]+'년 '+parseInt(ym[1])+'월';
   var line='────────────────────────────────';
   var txt=ml+' 용역비 정산서\n'+line+'\n담당자: '+t.name+'\n'+line+'\n'+
   'PT 전체 매출 금액       ₩  -\n수업 정산금             ₩  '+fmt(incentive)+'\n고정 정산금             ₩  '+(base>0?fmt(base):'-')+'\n'+
-  '성과 정산금             ₩  -\n계약 지원금             ₩  -\n'+line+'\n용역대가 합계           ₩  '+fmt(totalService)+'\n소득세(3%)              ₩  '+fmt(incomeTax)+'\n지방소득세(0.3%)        ₩  '+fmt(localTax)+'\n'+line+'\n지급 금액               ₩  '+fmt(finalPay)+'\n'+line+'\n\n[수업 상세 - '+totalQty+'회]\n';
-  sessions.forEach(function(s){
-    var pkg=S.packages.filter(function(p){return p.memberId==s.memberId&&!p.isRefund;}).sort(function(a,b){return b.startDate.localeCompare(a.startDate);})[0];
-    var pExVat=pkg?getExVatPrice(pkg.pricePerSession,pkg.payType):0;
-    var rt=(pkg&&pkg.regType)||'new';var pct=REG_PCT[rt]||45;var qty=Number(s.qty||1);var pay=Math.round(pExVat*pct/100)*qty;
-    txt+='  '+s.date.slice(0,7)+' | '+mname(s.memberId)+' | '+qty+'회 | '+REG_LABEL[rt]+' | '+fmt(pExVat)+'원×'+pct+'% = '+fmt(pay)+'원\n';
+  '성과 정산금             ₩  -\n계약 지원금             ₩  '+(bonus>0?fmt(bonus):'-')+'\n'+line+'\n용역대가 합계           ₩  '+fmt(totalService)+'\n소득세(3%)              ₩  '+fmt(incomeTax)+'\n지방소득세(0.3%)        ₩  '+fmt(localTax)+'\n'+line+'\n지급 금액               ₩  '+fmt(finalPay)+'\n'+line+'\n\n[수업 상세 - '+totalQty+'회]\n';
+  td.sessions.forEach(function(s){
+    txt+='  '+s.date.slice(0,7)+' | '+mname(s.memberId)+' | '+s.qty+'회 | '+REG_LABEL[s.rt]+' | '+fmt(s.pExVat)+'원×'+s.pct+'% = '+fmt(s.pay)+'원\n';
   });
   try{navigator.clipboard.writeText(txt).then(function(){alert('✅ '+t.name+' 정산서가 복사됐어요!');});}
   catch(e){var ta=document.createElement('textarea');ta.value=txt;document.body.appendChild(ta);ta.select();document.execCommand('copy');document.body.removeChild(ta);alert('✅ 정산서가 복사됐어요!');}
@@ -2268,7 +2333,7 @@ function importExcel(e){
               isRefund:isRefund,unpaidCollections:[],memo:String(r['메모']||'').trim()};
             result.packages.push(pkg);
             if(!isRefund&&qty>0){
-              result.sessions.push({id:uid(),type:'add',memberId:m?m.id:'',trainerId:t?t.id:'',packageId:pkg.id,date:dateStr,qty:qty,memo:'엑셀 가져오기'});
+              result.sessions.push({id:uid(),type:'add',memberId:m?m.id:'',trainerId:t?t.id:'',packageId:pkg.id,date:dateStr,qty:qty,memo:''});
             }
           });
         }
@@ -2304,7 +2369,7 @@ function importExcel(e){
             if(!month.match(/^\d{4}-\d{2}/))return;
             var m=result.members.find(function(x){return x.name===memberName;})||S.members.find(function(x){return x.name===memberName;})||null;
             var t=findTrainer(trainerName);
-            result.sessions.push({id:uid(),type:'use',memberId:m?m.id:'',trainerId:t?t.id:'',date:month+'-01',qty:qty,memo:memo||'엑셀 가져오기'});
+            result.sessions.push({id:uid(),type:'use',memberId:m?m.id:'',trainerId:t?t.id:'',date:month+'-01',qty:qty,memo:memo||''});
           });
         }
         if(!result.members.length&&!result.packages.length){
