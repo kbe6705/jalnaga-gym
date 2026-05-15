@@ -1764,7 +1764,7 @@ function calcTrainerPay(trainerId,monthList){
       var rt=(pkg&&pkg.regType)||'new';
       var pct=REG_PCT[rt]||45;
       var qty=Number(s.qty||1);
-      var pay=Math.round(pExVat*pct/100)*qty;
+      var pay=Math.round(pExVat*pct/100*qty);
       result.sessions.push({date:s.date,memberId:s.memberId,priceVat:priceVat,pExVat:pExVat,rt:rt,pct:pct,pay:pay,qty:qty});
       result.totalPay+=pay;result.totalQty+=qty;
       if(!result.monthlyData[month])result.monthlyData[month]={pay:0,qty:0};
