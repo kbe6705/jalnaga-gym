@@ -1902,12 +1902,13 @@ function refreshPayroll(){var mc=document.getElementById('main-content');if(mc)m
 // ── STATEMENT ──
 function buildStatementHTML(trainerId,month){
   var t=S.trainers.find(function(x){return x.id===trainerId;});if(!t)return '';
-  // calcTrainerPay와 동일한 로직 사용 (일관성 보장)
   var td=calcTrainerPay(trainerId,[month]);
   var totalQty=td.totalQty;
   var incentive=td.totalPay;
-  var base=t.base||0;var totalService=base+incentive;
-  var incomeTax=Math.round(totalService*0.03);var localTax=Math.round(totalService*0.003);var finalPay=totalService-incomeTax-localTax;
+  var base=t.base||0;
+  var bonus=getBonus(trainerId,month);
+  var totalService=base+incentive+bonus;
+  var incomeTax=Math.floor(totalService*0.03/10)*10;var localTax=Math.floor(totalService*0.003/10)*10;var finalPay=totalService-incomeTax-localTax;
   var ym=month.split('-');var ml=ym[0]+'년 '+parseInt(ym[1])+'월';
   var detailRows=td.sessions.map(function(s){
     return '<tr><td>'+s.date.slice(0,7)+'</td><td>'+mname(s.memberId)+'</td><td>'+s.qty+'회</td>'+
@@ -1941,25 +1942,74 @@ function printAllStatements(month){
   openPrintWindow(htmls,month);
 }
 function openPrintWindow(htmls,month){
-  var w=window.open('','_blank','width=800,height=900');
-  w.document.write('<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><title>'+month+' 용역비 정산서</title>'+
-  '<style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:\'Apple SD Gothic Neo\',sans-serif;font-size:13px;color:#111;background:#fff;padding:20px}'+
-  '.stmt-page{max-width:600px;margin:0 auto 60px;border:1px solid #ccc;padding:30px}'+
+  // 기존 모달 있으면 제거
+  var existing=document.getElementById('print-overlay');
+  if(existing)document.body.removeChild(existing);
+
+  var stmtStyle='*{box-sizing:border-box;margin:0;padding:0}'+
+  '.stmt-page{max-width:600px;margin:0 auto 40px;border:1px solid #ccc;padding:30px;background:#fff;font-family:Arial,sans-serif;font-size:13px;color:#111}'+
   '.stmt-title{text-align:center;font-size:16px;font-weight:700;border:1px solid #333;padding:10px;margin-bottom:0;background:#f9f9f9}'+
-  '.stmt-table{width:100%;border-collapse:collapse;margin-bottom:20px}.stmt-table td{border:1px solid #ccc;padding:9px 14px}'+
-  '.stmt-label{width:60%;background:#fafafa}.stmt-currency{width:8%;text-align:center}.stmt-amount{width:32%;text-align:right;font-weight:500}'+
-  '.stmt-subtotal td{background:#f0f0f0;font-weight:700}.stmt-final td{background:#f5c518;font-weight:700;font-size:14px}'+
-  '.stmt-detail{margin-bottom:20px}.stmt-detail-title{font-size:12px;font-weight:700;color:#555;margin-bottom:6px;padding-bottom:4px;border-bottom:1px solid #ddd}'+
-  '.stmt-detail-table{width:100%;border-collapse:collapse;font-size:11px}.stmt-detail-table th{background:#f0f0f0;border:1px solid #ccc;padding:5px 8px;text-align:center}'+
+  '.stmt-table{width:100%;border-collapse:collapse;margin-bottom:20px}'+
+  '.stmt-table td{border:1px solid #ccc;padding:9px 14px}'+
+  '.stmt-label{width:60%;background:#fafafa}'+
+  '.stmt-currency{width:8%;text-align:center}'+
+  '.stmt-amount{width:32%;text-align:right;font-weight:500}'+
+  '.stmt-subtotal td{background:#f0f0f0;font-weight:700}'+
+  '.stmt-final td{background:#f5c518;font-weight:700;font-size:14px}'+
+  '.stmt-detail{margin-bottom:20px}'+
+  '.stmt-detail-title{font-size:12px;font-weight:700;color:#555;margin-bottom:6px;padding-bottom:4px;border-bottom:1px solid #ddd}'+
+  '.stmt-detail-table{width:100%;border-collapse:collapse;font-size:11px}'+
+  '.stmt-detail-table th{background:#f0f0f0;border:1px solid #ccc;padding:5px 8px;text-align:center}'+
   '.stmt-detail-table td{border:1px solid #ddd;padding:5px 8px;text-align:center}'+
-  '.stmt-footer{display:flex;justify-content:space-between;font-size:12px;color:#666;border-top:1px solid #ddd;padding-top:12px}'+
-  '@media print{.no-print{display:none}.stmt-page{border:none;page-break-after:always;margin:0 auto}.stmt-page:last-child{page-break-after:auto}}'+
-  '</style></head><body>'+
-  '<div class="no-print" style="text-align:center;margin-bottom:20px;display:flex;gap:10px;justify-content:center">'+
-  '<button onclick="window.print()" style="padding:10px 28px;background:#f5a800;color:#fff;border:none;border-radius:6px;font-size:14px;font-weight:700;cursor:pointer">🖨️ 인쇄 / PDF 저장</button>'+
-  '<button onclick="window.close()" style="padding:10px 20px;background:#eee;border:1px solid #ccc;border-radius:6px;cursor:pointer">닫기</button>'+
-  '</div>'+htmls.join('<div style="page-break-after:always"></div>')+'</body></html>');
-  w.document.close();
+  '.stmt-footer{display:flex;justify-content:space-between;font-size:12px;color:#666;border-top:1px solid #ddd;padding-top:12px}';
+
+  var overlay=document.createElement('div');
+  overlay.id='print-overlay';
+  overlay.style.cssText='position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.7);z-index:99999;overflow-y:auto;padding:20px;display:flex;flex-direction:column;align-items:center';
+
+  var btnBar=document.createElement('div');
+  btnBar.style.cssText='display:flex;gap:10px;margin-bottom:16px;position:sticky;top:0;z-index:2;background:rgba(30,20,10,.85);padding:12px 24px;border-radius:10px;backdrop-filter:blur(4px)';
+  btnBar.innerHTML=
+  '<button id="btn-print-stmt" style="padding:12px 28px;background:#f5a800;color:#fff;border:none;border-radius:8px;font-size:15px;font-weight:700;cursor:pointer;font-family:inherit">🖨️ 인쇄 / PDF 저장</button>'+
+  '<button id="btn-close-stmt" style="padding:12px 24px;background:#555;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:14px;font-family:inherit">✕ 닫기</button>';
+
+  var content=document.createElement('div');
+  content.id='print-stmt-content';
+  content.style.cssText='width:100%;max-width:680px;';
+  content.innerHTML='<style>'+stmtStyle+'</style>'+htmls.join('<div style="height:24px"></div>');
+
+  overlay.appendChild(btnBar);
+  overlay.appendChild(content);
+  document.body.appendChild(overlay);
+
+  // 닫기 버튼
+  document.getElementById('btn-close-stmt').onclick=function(){
+    var ol=document.getElementById('print-overlay');
+    if(ol)document.body.removeChild(ol);
+  };
+  // 배경 클릭 닫기
+  overlay.onclick=function(e){if(e.target===overlay){document.body.removeChild(overlay);}};
+
+  // 인쇄 버튼
+  document.getElementById('btn-print-stmt').onclick=function(){
+    var printHtml='<!DOCTYPE html><html><head><meta charset="UTF-8">'+
+    '<title>'+month+' 용역비 정산서</title>'+
+    '<style>'+stmtStyle+'body{padding:20px;font-family:Arial,sans-serif;}@media print{body{padding:0}}</style>'+
+    '</head><body>'+htmls.join('<div style="page-break-after:always"></div>')+'</body></html>';
+    var blob=new Blob([printHtml],{type:'text/html;charset=utf-8'});
+    var url=URL.createObjectURL(blob);
+    var pw=window.open(url,'_blank');
+    if(pw){
+      pw.onload=function(){pw.print();};
+    } else {
+      // 팝업 차단 시 다운로드로 대체
+      var a=document.createElement('a');
+      a.href=url;
+      a.download=month+'_정산서.html';
+      a.click();
+      alert('팝업이 차단됐어요!\n\n다운로드된 HTML 파일을 열어서 인쇄해주세요 😊');
+    }
+  };
 }
 function copyStatementText(trainerId,month){
   var t=S.trainers.find(function(x){return x.id===trainerId;});if(!t){alert('트레이너 정보 없음');return;}
@@ -1968,7 +2018,7 @@ function copyStatementText(trainerId,month){
   var totalQty=td.totalQty;
   var incentive=td.totalPay;
   var base=t.base||0;var totalService=base+incentive;
-  var incomeTax=Math.round(totalService*0.03);var localTax=Math.round(totalService*0.003);var finalPay=totalService-incomeTax-localTax;
+  var incomeTax=Math.floor(totalService*0.03/10)*10;var localTax=Math.floor(totalService*0.003/10)*10;var finalPay=totalService-incomeTax-localTax;
   var ym=month.split('-');var ml=ym[0]+'년 '+parseInt(ym[1])+'월';
   var line='────────────────────────────────';
   var txt=ml+' 용역비 정산서\n'+line+'\n담당자: '+t.name+'\n'+line+'\n'+
