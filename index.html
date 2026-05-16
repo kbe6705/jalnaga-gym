@@ -1239,7 +1239,15 @@ function buildSalesSummary(){
     });
   });
   // 등록 매출: originalPaid(최초입금액)만 사용 - 수금액 제외
-  var regRev=allPkgs.reduce(function(s,p){return s+(Number(p.originalPaid!==undefined?p.originalPaid:p.paidAmount)||0);},0);
+  // 등록월 매출 = 최초입금액(originalPaid)만 사용 - 수금액 제외
+  var regRev=allPkgs.reduce(function(s,p){
+    // originalPaid 있으면 사용, 없으면 수금이력 없을때만 paidAmount 사용
+    var orig=p.originalPaid!==undefined?Number(p.originalPaid):
+      (p.unpaidCollections&&p.unpaidCollections.length>0?
+        Number(p.paidAmount)-calcUnpaidCollected(p): // 수금액 제외
+        Number(p.paidAmount));
+    return s+(orig||0);
+  },0);
   // 수금 매출: 수금일이 이번 기간인 것만 (등록월 관계없이)
   var collRev=collInView.reduce(function(s,x){return s+Number(x.c.amount||0);},0);
   var totalRev=regRev+collRev;
@@ -1268,7 +1276,10 @@ function buildSalesSummary(){
   allPkgs.forEach(function(p){
     var tid=p.trainerId||'';
     if(!tm[tid])tm[tid]={rev:0,cnt:0,refund:0,refundCnt:0,unpaidCnt:0,unpaidAmt:0};
-    var rev=Number(p.originalPaid!==undefined?p.originalPaid:p.paidAmount)||0; // 최초입금액만
+    var rev=p.originalPaid!==undefined?Number(p.originalPaid):
+      (p.unpaidCollections&&p.unpaidCollections.length>0?
+        Number(p.paidAmount)-calcUnpaidCollected(p):
+        Number(p.paidAmount))||0; // 최초입금액만
     tm[tid].rev+=rev;tm[tid].cnt++;
     if(calcRemainingUnpaid(p)>0){tm[tid].unpaidCnt++;tm[tid].unpaidAmt+=calcRemainingUnpaid(p);}
   });
@@ -1326,10 +1337,13 @@ function buildSalesSummary(){
       var hasRefund=dm.refunds&&dm.refunds.length>0;
       var itemRows=(dm.items||[]).map(function(p){
         var remaining=calcRemainingUnpaid(p);
+        var dispPaid=p.originalPaid!==undefined?Number(p.originalPaid):Number(p.paidAmount)||0;
+        var coll=calcUnpaidCollected(p);
         return '<tr><td>'+mname(p.memberId)+'</td>'+
         '<td><span class="badge '+REG_BADGE[p.regType||'new']+'">'+REG_LABEL[p.regType||'new']+'</span></td>'+
         '<td><span class="badge badge-gray">'+(PAY_LABEL[p.payType]||'-')+'</span></td>'+
-        '<td><strong>'+fmt(Number(p.paidAmount)||0)+'원</strong>'+
+        '<td><strong>'+fmt(dispPaid)+'원</strong>'+
+        (coll>0?'<div style="font-size:10px;color:var(--info)">+수금 '+fmt(coll)+'원</div>':'')+
         (remaining>0?'<div style="font-size:10px;color:var(--danger)">미수 '+fmt(remaining)+'원</div>':'')+
         '</td></tr>';
       }).join('');
@@ -1475,11 +1489,11 @@ function renderPackageList(){
     '<td><span class="badge badge-gray">'+(PAY_LABEL[p.payType]||'-')+'</span>'+(p.approvalNo?'<div style="font-size:10px;color:var(--text3)">'+p.approvalNo+'</div>':'')+'</td>'+
     '<td>'+
     '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">'+
-    '<strong>'+fmt(p.paidAmount||p.totalSessions*p.pricePerSession)+'원</strong>'+
-    (hasColl&&remaining===0?'<span style="background:#fff3cd;color:#856404;font-size:10px;font-weight:700;padding:2px 6px;border-radius:4px;border:1px solid #ffc107">(미수금)</span>':'')+
+    '<strong>'+fmt(p.originalPaid!==undefined?p.originalPaid:p.paidAmount)+'원</strong>'+
+    (hasColl&&remaining===0?'<span style="background:#fff3cd;color:#856404;font-size:10px;font-weight:700;padding:2px 6px;border-radius:4px;border:1px solid #ffc107">(미수금완납)</span>':'')+
     (hasUnpaid?'<span style="background:#fde8e8;color:var(--danger);font-size:10px;font-weight:700;padding:2px 6px;border-radius:4px;border:1px solid #f5b4b4">미수잔여</span>':'')+
     '</div>'+
-    (hasColl?'<div style="font-size:10px;color:var(--text3);margin-top:2px">최초 '+fmt(p.originalPaid||0)+'원 +수금 '+fmt(calcUnpaidCollected(p))+'원</div>':'')+
+    (hasColl?'<div style="font-size:10px;color:var(--info);margin-top:2px">+수금 '+fmt(calcUnpaidCollected(p))+'원</div>':'')+
     (hasUnpaid?'<div style="font-size:10px;color:var(--danger)">잔여 '+fmt(remaining)+'원</div>':'')+
     '</td>'+
     '<td>'+(hasUnpaid||hasColl?
@@ -1543,13 +1557,14 @@ function collectUnpaid(pkgId){
     if(!dateStr){alert('날짜를 선택해주세요');return;}
     document.body.removeChild(overlay);
     if(!p.unpaidCollections)p.unpaidCollections=[];
-    if(p.originalPaid===undefined)p.originalPaid=Number(p.paidAmount)||0;
+    // originalPaid 최초 1회만 설정 (절대 변경 안함)
+    if(p.originalPaid===undefined||p.originalPaid===null)p.originalPaid=Number(p.paidAmount)||0;
     var rec={date:dateStr,amount:amount,payType:payType};
     if(cardco)rec.cardco=cardco;if(cardno)rec.cardno=cardno;if(approvalNo)rec.approvalNo=approvalNo;if(crno)rec.crno=crno;
     p.unpaidCollections.push(rec);
-    // paidAmount = 최초입금 + 수금합계 (총금액 초과 불가)
+    // paidAmount만 업데이트 (originalPaid는 절대 변경 안함)
     var totalPrice=p.totalSessions*p.pricePerSession;
-    var newPaid=Math.min((p.originalPaid||0)+calcUnpaidCollected(p), totalPrice);
+    var newPaid=Math.min((p.originalPaid||0)+calcUnpaidCollected(p),totalPrice);
     p.paidAmount=newPaid;
     p.unpaidAmount=Math.max(0,totalPrice-newPaid);
     saveState();logAct('미수수금:'+mname(p.memberId)+' '+fmt(amount)+'원 ('+dateStr+')');
