@@ -82,6 +82,7 @@ let unpaidView='all',unpaidMonth='',unpaidDate='',unpaidYear='';
 
 var GAS_URL='https://script.google.com/macros/s/AKfycbzibGXgQXR_AqojSPS0GjiToWCq7-Zx5BNbWqk_8b8gNKX5IW1dIN4GBrv4R2HVlGim/exec';
 var _saving=false;
+var _cloudReady=false;
 
 function LS(k,d){if(d===undefined)d='[]';try{var v=localStorage.getItem(k);return JSON.parse(v!==null?v:d);}catch(e){try{return JSON.parse(d);}catch(e2){return [];}}}
 function SS(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}}
@@ -98,6 +99,7 @@ function loadState(){
 
 // 구글시트에서 최신 데이터 가져오기
 function syncFromCloud(callback){
+  _cloudReady=false;
   showSyncBanner('☁️ 데이터 불러오는 중...');
   fetch(GAS_URL)
   .then(function(r){return r.json();})
@@ -105,6 +107,7 @@ function syncFromCloud(callback){
     if(res.ok&&res.data&&res.data.length>2){
       try{
         var d=JSON.parse(res.data);
+        if(!d||!Array.isArray(d.members)||!Array.isArray(d.packages)||!Array.isArray(d.sessions)||!Array.isArray(d.trainers))throw new Error('Invalid sheet data');
         if(d.members)S.members=d.members;
         if(d.packages)S.packages=d.packages;
         if(d.sessions)S.sessions=d.sessions;
@@ -112,10 +115,13 @@ function syncFromCloud(callback){
         if(d.lockers)S.lockers=d.lockers;
         if(d.accounts)S.accounts=d.accounts;
         if(d.deletedLog)S.deletedLog=d.deletedLog;
+        if(d.bonuses)S.bonuses=d.bonuses;
         SS('jng_members',S.members);SS('jng_packages',S.packages);
         SS('jng_sessions',S.sessions);SS('jng_trainers',S.trainers);
         SS('jng_lockers',S.lockers);SS('jng_accounts',S.accounts);
         SS('jng_deletedlog',S.deletedLog);
+        SS('jng_bonuses',S.bonuses||{});
+        _cloudReady=true;
         hideSyncBanner();
         if(callback)callback(true);
       }catch(e){hideSyncBanner();if(callback)callback(false);}
@@ -131,12 +137,13 @@ function saveState(){
   SS('jng_members',S.members);SS('jng_packages',S.packages);SS('jng_sessions',S.sessions);
   SS('jng_trainers',S.trainers);SS('jng_lockers',S.lockers);SS('jng_accounts',S.accounts);
   SS('jng_actlog',S.actLog);SS('jng_deletedlog',S.deletedLog);SS('jng_bonuses',S.bonuses||{});
+  if(!_cloudReady){showSyncBanner('⚠️ 구글시트 데이터를 불러오지 못해 시트 저장을 중단했습니다. 새로고침 후 다시 시도해주세요.');return;}
   if(_saving)return;_saving=true;
   showSyncBanner('💾 저장 중...');
   var payload=JSON.stringify({
     members:S.members,packages:S.packages,sessions:S.sessions,
     trainers:S.trainers,lockers:S.lockers,accounts:S.accounts,
-    deletedLog:S.deletedLog||[]
+    deletedLog:S.deletedLog||[],bonuses:S.bonuses||{}
   });
   fetch(GAS_URL,{method:'POST',body:JSON.stringify({data:payload})})
   .then(function(r){return r.json();})
@@ -2518,7 +2525,7 @@ loadState();
   // 로딩 화면
   app.innerHTML='<div style="min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;background:linear-gradient(135deg,#1a1710,#2d2418)">'+
   '<div style="font-size:32px;font-weight:900;color:#f5a800;margin-bottom:16px">💪 잘나가GYM</div>'+
-  '<div style="color:#aaa;font-size:14px;margin-bottom:24px">☁️ 데이터 불러오는 중...</div>'+
+  '<div style="color:#aaa;font-size:14px;margin-bottom:24px">구글시트 데이터 불러오는 중...</div>'+
   '<div style="width:48px;height:48px;border:4px solid #333;border-top-color:#f5a800;border-radius:50%;animation:spin 1s linear infinite"></div>'+
   '<style>@keyframes spin{to{transform:rotate(360deg)}}</style>'+
   '</div>';
@@ -2535,11 +2542,13 @@ loadState();
 var autoPayMonth=new Date().getFullYear()+'-'+String(new Date().getMonth()+1).padStart(2,'0');
 function apEscape(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
 function apTrainers(){return S.trainers.filter(function(t){return CU&&(CU.role==='admin'||t.id===CU.trainerId);});}
+// Cash prices already exclude VAT; card/receipt prices include VAT.
+function apPayrollBase(amount,payType){return payType==='cash'?Number(amount||0):Number(amount||0)/1.1;}
 function apCalculate(t,month){
   var legacy=t.payrollHistorySettings&&t.payrollHistorySettings[month];
   var sales=S.packages.filter(function(p){return !p.isRefund&&p.trainerId===t.id&&String(p.startDate).slice(0,7)===month;});
   // Commission tiers use registration revenue INCLUDING VAT.
-  var revenue=sales.reduce(function(a,p){return a+Number(p.totalSessions||0)*Number(p.pricePerSession||0)/1.1;},0);
+  var revenue=sales.reduce(function(a,p){return a+apPayrollBase(Number(p.totalSessions||0)*Number(p.pricePerSession||0),p.payType);},0);
   var revenueVat=sales.reduce(function(a,p){return a+Number(p.totalSessions||0)*Number(p.pricePerSession||0);},0);
   var tier=revenueVat>=7000000?3:revenueVat>=5000000?2:revenueVat>=3000000?1:0;
   var rates=[[.4,.4],[.4,.45],[.45,.5],[.45,.55]][tier];
@@ -2551,12 +2560,12 @@ function apCalculate(t,month){
     var qty=sessions.filter(function(s){return s.packageId===p.id;}).reduce(function(a,s){return a+Number(s.qty||1);},0);
     var allCurrent=S.sessions.filter(function(s){return s.type==='use'&&s.packageId===p.id&&String(s.date).slice(0,7)===month;}).reduce(function(a,s){return a+Number(s.qty||1);},0);
     var returning=p.regType==='re'||p.regType==='intro';
-    var rate=legacy?(returning?.55:.45):t.payEmployment==='freelance'?(returning?.55:.45):rates[returning?1:0],unit=legacy?(p.payType==='cash'?Number(p.pricePerSession||0):Math.round(Number(p.pricePerSession||0)/1.1)):Number(p.pricePerSession||0)/1.1;
+    var rate=legacy?(returning?.55:.45):t.payEmployment==='freelance'?(returning?.55:.45):rates[returning?1:0],unit=legacy?(p.payType==='cash'?Number(p.pricePerSession||0):Math.round(Number(p.pricePerSession||0)/1.1)):apPayrollBase(p.pricePerSession,p.payType);
     var rowPay=legacy?sessions.filter(function(s){return s.packageId===p.id;}).reduce(function(a,s){return a+Math.round(unit*rate*Number(s.qty||1));},0):qty*unit*rate;
     var transfers=(S.members.find(function(m){return m.id===p.memberId;})||{}).handovers||[];
     var owner=transfers.length&&typeof apTrainerOn==='function'?apTrainerOn(p.memberId,month+'-31'):p.trainerId;
     var transferNote=transfers.map(function(h){return h.date+' '+tname(h.from)+' → '+tname(h.to);}).join(' / ');
-    return [p.startDate,mname(p.memberId),Number(p.totalSessions||0)*Number(p.pricePerSession||0),Number(p.totalSessions||0)*Number(p.pricePerSession||0)/1.1,Number(p.totalSessions||0),unit,Number(p.totalSessions||0)-prior,qty,Number(p.totalSessions||0)-prior-allCurrent,REG_LABEL[p.regType||'new']||'신규',rate,unit*rate,rowPay,owner===t.id?(Number(p.totalSessions||0)-prior-allCurrent)*unit*rate:0,t.name,transferNote];
+    return [p.startDate,mname(p.memberId),Number(p.totalSessions||0)*Number(p.pricePerSession||0),apPayrollBase(Number(p.totalSessions||0)*Number(p.pricePerSession||0),p.payType),Number(p.totalSessions||0),unit,Number(p.totalSessions||0)-prior,qty,Number(p.totalSessions||0)-prior-allCurrent,REG_LABEL[p.regType||'new']||'신규',rate,unit*rate,rowPay,owner===t.id?(Number(p.totalSessions||0)-prior-allCurrent)*unit*rate:0,t.name,transferNote];
   }).filter(function(row){return row[7]>0;});
   var lesson=Math.round(rows.reduce(function(a,r){return a+r[12];},0));
   var employment=t.payEmployment||'';
@@ -2625,12 +2634,12 @@ async function apStyledExport(id,month){
     orig('H36','전월말 잔여 세션');orig('B77','기본급 / 지원금');
     orig('P36','수업 담당');orig('Q36','인수인계 이력');
     orig('B75','PT 매출 (VAT 포함)');orig('J20','이번달 매출 (VAT 포함)');orig('J13','수수료 적용표 (기준 = VAT 포함 매출)');
-    orig('B30','매출 구간은 VAT 포함 등록매출 기준입니다. 수업료 단가는 VAT 제외 기준입니다. 진행 횟수·수업료는 실제 담당 트레이너별로 분리됩니다.');
-    d.sales.forEach(function(p,i){var r=5+i,amount=Number(p.totalSessions||0)*Number(p.pricePerSession||0);['B','C','D','E','F','G','H','I'].forEach(function(col,j){set(col+r,[p.startDate,mname(p.memberId),REG_LABEL[p.regType||'new']||'신규',amount,amount/1.1,Number(p.totalSessions||0),Number(p.pricePerSession||0)/1.1,t.name][j]);});});
+    orig('B30','매출 구간은 VAT 포함 등록매출 기준입니다. 수업료: 현금은 입력금액 그대로, 카드·현금영수증은 VAT 제외(÷1.1). 진행 횟수·수업료는 실제 담당 트레이너별로 분리됩니다.');
+    d.sales.forEach(function(p,i){var r=5+i,amount=Number(p.totalSessions||0)*Number(p.pricePerSession||0);['B','C','D','E','F','G','H','I'].forEach(function(col,j){set(col+r,[p.startDate,mname(p.memberId),REG_LABEL[p.regType||'new']||'신규',amount,apPayrollBase(amount,p.payType),Number(p.totalSessions||0),apPayrollBase(p.pricePerSession,p.payType),t.name][j]);});});
     var salesTotal=mapRow(25),detailStart=mapRow(37),detailTotal=mapRow(72);
     orig('E25',d.revenueVat,'SUM(E5:E'+(salesTotal-1)+')');orig('F25',d.revenue,'SUM(F5:F'+(salesTotal-1)+')');
     orig('G25',d.sales.reduce(function(a,p){return a+Number(p.totalSessions||0);},0));
-    orig('H25',d.sales.length?d.sales.reduce(function(a,p){return a+Number(p.pricePerSession||0)/1.1;},0)/d.sales.length:0);
+    orig('H25',d.sales.length?d.sales.reduce(function(a,p){return a+apPayrollBase(p.pricePerSession,p.payType);},0)/d.sales.length:0);
     orig('K20',d.revenueVat,'E'+salesTotal);orig('K21',d.revenueVat>=7000000?'700만 이상':d.revenueVat>=5000000?'500~700만 미만':d.revenueVat>=3000000?'300~500만 미만':'300만 미만');
     orig('K22',freelance?'프리랜서':t.payEmployment==='part'?'파트':t.payEmployment==='full'?'정직원':'사이트 설정');orig('K23',d.support);orig('K24',d.incentive);
     if(freelance){orig('J13','프리랜서 고정 수수료 (매출구간 무관)');orig('K21','신규 45% / 재등록·소개 55% 고정');for(var rr=15;rr<=18;rr++){orig('L'+rr,.45);orig('M'+rr,.55);orig('N'+rr,0);}}
